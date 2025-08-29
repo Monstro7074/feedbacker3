@@ -1,5 +1,5 @@
 {
-  "name": "feedbacker-backend",
+  "name": "feedbacker3",
   "version": "1.0.0",
   "description": "Backend MVP for Feedbacker (voice feedback system)",
   "main": "server.js",
