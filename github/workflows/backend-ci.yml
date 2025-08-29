@@ -1,0 +1,117 @@
+name: backend-ci
+
+on:
+  push:
+    branches: [ main, feedbacker-ci ]
+    paths:
+      - "apps/backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [ main, feedbacker-ci ]
+    paths:
+      - "apps/backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    # Фолбэк: берём URL из secrets или из repository variables (Settings → Variables)
+    env:
+      BASE_URL: ${{ secrets.FEEDBACK_API_URL || vars.FEEDBACK_API_URL }}
+      ALERT_THRESHOLD: ${{ secrets.TELEGRAM_ALERT_THRESHOLD || vars.TELEGRAM_ALERT_THRESHOLD || '0.6' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'apps/backend/package-lock.json'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Syntax check (ESM)
+        run: |
+          node --check server.js
+          node --check routes/feedback.js
+
+      - name: Warm up backend (retry /health)
+        run: |
+          # 1) попробовать взять URL из секретов/vars (env.BASE_URL),
+          # 2) если пусто — вытащить из Postman env (ключ baseUrl)
+          URL="${BASE_URL}"
+          if [ -z "$URL" ]; then
+            if command -v jq >/dev/null 2>&1; then
+              URL="$(jq -r '.values[] | select(.key=="baseUrl") | .value // empty' postman/Feedbacker_ENV.postman_environment.json || true)"
+            fi
+          fi
+          if [ -z "$URL" ]; then
+            echo "ERROR: FEEDBACK_API_URL is not configured (no secret/var) and baseUrl is not found in Postman env."
+            exit 1
+          fi
+          echo "Warming up $URL ..."
+          for i in {1..30}; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "$URL/health" || true)
+            echo "Attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "Backend is not ready after retries"; exit 1
+
+      - name: Run Postman sanity (with JUnit report)
+        if: ${{ hashFiles('apps/backend/postman/*.json') != '' }}
+        run: |
+          npx --yes newman run postman/Feedbacker_OneClick.postman_collection.json \
+            -e postman/Feedbacker_ENV.postman_environment.json \
+            --timeout-request 15000 --timeout 180000 \
+            --delay-request 300 \
+            --reporters cli,junit \
+            --reporter-junit-export newman-results.xml
+        env:
+          # пробрасываем в коллекцию, если она использует эту переменную
+          FEEDBACK_API_URL: ${{ env.BASE_URL }}
+          TELEGRAM_ALERT_THRESHOLD: ${{ env.ALERT_THRESHOLD }}
+
+      - name: Upload Newman report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: newman-results
+          path: apps/backend/newman-results.xml
+
+      - name: Quick debug endpoints
+        if: ${{ failure() }}
+        run: |
+          set -x
+          URL="${BASE_URL}"
+          if [ -z "$URL" ] && command -v jq >/dev/null 2>&1; then
+            URL="$(jq -r '.values[] | select(.key=="baseUrl") | .value // empty' postman/Feedbacker_ENV.postman_environment.json || true)"
+          fi
+          echo "DEBUG URL=$URL"
+          curl -i "$URL/health" || true
+          curl -i "$URL/" || true
+
+      - name: Deploy to Render
+        if: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feedbacker-ci') && success() }}
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          curl -sS -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}'

@@ -1,0 +1,37 @@
+# render.yaml — Blueprint для деплоя Feedbacker на Render
+services:
+  - type: web
+    name: feedbacker-backend
+    env: node
+    plan: free               # можно поменять на starter/standard позже
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: "npm ci"
+    startCommand: "node server.js"
+    # region: oregon         # опционально: oregon / frankfurt / singapore и т.п.
+
+    envVars:
+      # --- не-секретные (можно хранить в yaml) ---
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        value: https://cyrtemxotgrgfjjhlrxe.supabase.co
+      - key: SUPABASE_BUCKET
+        value: audio
+      - key: CORS_ORIGINS
+        # на старте достаточно домена Lovable; после первого деплоя ДОБАВЬ сюда твой https://<app>.onrender.com
+        value: "https://app.lovable.dev"
+
+      # --- секреты: вводятся в UI Render при первом разворачивании ---
+      - key: SUPABASE_KEY         # anon key (для RLS-читателей, REST)
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: OPENAI_API_KEY       # опционально; если нет — аналитика пойдёт по эвристике
+        sync: false

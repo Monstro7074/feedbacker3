@@ -1,0 +1,71 @@
+name: agent-autocommit
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Target branch"
+        default: "feedbacker-ci"
+        required: true
+      commit_message:
+        description: "Commit message"
+        default: "chore(agent): apply automated changes"
+        required: true
+      workdir:
+        description: "Working directory"
+        default: "apps/backend"
+        required: true
+      commands:
+        description: "Shell commands to run before commit (one per line)"
+        default: |
+          node --check server.js
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '${{ github.event.inputs.workdir }}/package-lock.json'
+
+      - name: Install deps (if package.json exists)
+        run: |
+          if [ -f "${{ github.event.inputs.workdir }}/package.json" ]; then
+            cd "${{ github.event.inputs.workdir }}"
+            npm ci
+          fi
+
+      - name: Run agent commands
+        run: |
+          set -e
+          cd "${{ github.event.inputs.workdir }}"
+          # Выполним набор команд, если они заданы
+          echo "${{ github.event.inputs.commands }}" | while IFS= read -r cmd; do
+            [ -z "$cmd" ] && continue
+            echo "→ $cmd"
+            bash -lc "$cmd"
+          done
+
+      - name: Auto-commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: ${{ github.event.inputs.commit_message }}
+          branch: ${{ github.event.inputs.branch }}
+          commit_user_name: "feedbacker-agent"
+          commit_user_email: "agent@users.noreply.github.com"
+          commit_options: "--no-verify"
+          push_options: "--force-with-lease"
+        env:
+          GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}

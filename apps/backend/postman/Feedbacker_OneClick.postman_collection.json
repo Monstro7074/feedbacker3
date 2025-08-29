@@ -1,0 +1,279 @@
+{
+	"info": {
+		"_postman_id": "7c33ff10-c47a-4ec3-b4af-ad3ed78ff373",
+		"name": "Feedbacker • Render Sanity (One‑Click) v2",
+		"description": "Linear sanity-run for Feedbacker backend on Render. No setNextRequest jumps; safe to run end‑to‑end. Includes saving created feedback_id for follow‑up requests.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "47215375",
+		"_collection_link": "https://uskov-prok-1367196.postman.co/workspace/a00f0ba4-9936-4db5-8609-c867f2f718ac/collection/47215375-7c33ff10-c47a-4ec3-b4af-ad3ed78ff373?action=share&source=collection_link&creator=47215375"
+	},
+	"item": [
+		{
+			"name": "01 OPTIONS /health",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Expect 200 or 204 for preflight",
+							"pm.test('Preflight OK (200/204)', ()=>{",
+							"  pm.expect([200,204]).to.include(pm.response.code);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "OPTIONS",
+				"header": [
+					{
+						"key": "Origin",
+						"value": "{{origin}}"
+					},
+					{
+						"key": "Access-Control-Request-Method",
+						"value": "GET"
+					},
+					{
+						"key": "Accept",
+						"value": "*/*"
+					}
+				],
+				"url": "{{baseUrl}}/health"
+			},
+			"response": []
+		},
+		{
+			"name": "02 GET /health",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Health 200 + {status:ok}', ()=>{",
+							"  pm.response.to.have.status(200);",
+							"  const json = pm.response.json();",
+							"  pm.expect(json.status).to.eql('ok');",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Origin",
+						"value": "{{origin}}"
+					},
+					{
+						"key": "Accept",
+						"value": "*/*"
+					}
+				],
+				"url": "{{baseUrl}}/health"
+			},
+			"response": []
+		},
+		{
+			"name": "03 GET /feedback/:shop_id",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('List OK (200)', ()=>pm.response.to.have.status(200));",
+							"// Optional: store last id from list",
+							"try {",
+							"  const arr = pm.response.json();",
+							"  if (Array.isArray(arr) && arr.length>0 && arr[0].id){",
+							"    pm.collectionVariables.set('lastFeedbackId', arr[0].id);",
+							"  }",
+							"} catch(e) {}"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Accept",
+						"value": "application/json"
+					}
+				],
+				"url": {
+					"raw": "{{baseUrl}}/feedback/{{shopId}}?since={{since}}&limit={{limit}}",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"feedback",
+						"{{shopId}}"
+					],
+					"query": [
+						{
+							"key": "since",
+							"value": "{{since}}"
+						},
+						{
+							"key": "limit",
+							"value": "{{limit}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "04 POST /feedback (form-data)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('POST 200', ()=>pm.response.to.have.status(200));",
+							"let id=null;",
+							"try{",
+							"  const j=pm.response.json();",
+							"  id=j.feedback_id||j.id||null;",
+							"}catch(e){}",
+							"if(id){",
+							"  pm.collectionVariables.set('lastFeedbackId', id);",
+							"  console.log('Saved lastFeedbackId', id);",
+							"} else {",
+							"  console.warn('No feedback_id in response; follow-up GETs may 404');",
+							"}"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Accept",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "audio",
+							"type": "file",
+							"src": "b7egqUuX8/testaudio50sec.mp3"
+						},
+						{
+							"key": "shop_id",
+							"value": "{{shopId}}",
+							"type": "text"
+						},
+						{
+							"key": "device_id",
+							"value": "{{deviceId}}",
+							"type": "text"
+						},
+						{
+							"key": "is_anonymous",
+							"value": "true",
+							"type": "text"
+						}
+					]
+				},
+				"url": "{{baseUrl}}/feedback"
+			},
+			"response": []
+		},
+		{
+			"name": "05 GET /feedback/full/:id",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Accept 200 (found) or 404 (not yet created)",
+							"pm.test('Full 200/404', ()=>pm.expect([200,404]).to.include(pm.response.code));"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Accept",
+						"value": "application/json"
+					}
+				],
+				"url": "{{baseUrl}}/feedback/full/{{lastFeedbackId}}"
+			},
+			"response": []
+		},
+		{
+			"name": "06 GET /feedback/get-audio/:id",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Signed URL 200/404', ()=>pm.expect([200,404]).to.include(pm.response.code));"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Accept",
+						"value": "application/json"
+					}
+				],
+				"url": "{{baseUrl}}/feedback/get-audio/{{lastFeedbackId}}"
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "https://feedbacker-backend-34nw.onrender.com"
+		},
+		{
+			"key": "origin",
+			"value": "https://app.lovable.dev"
+		},
+		{
+			"key": "shopId",
+			"value": "shop_001"
+		},
+		{
+			"key": "deviceId",
+			"value": "mirror_01"
+		},
+		{
+			"key": "since",
+			"value": "1970-01-01T00:00:00Z"
+		},
+		{
+			"key": "limit",
+			"value": "3"
+		},
+		{
+			"key": "audioFile",
+			"value": "/Users/you/Downloads/testaudio50sec.mp3"
+		},
+		{
+			"key": "lastFeedbackId",
+			"value": ""
+		}
+	]
+}

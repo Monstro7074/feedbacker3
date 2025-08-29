@@ -1,0 +1,57 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Feedbacker Mock API",
+    "version": "1.0.0",
+    "description": "API для сбора голосовых отзывов из примерочных"
+  },
+  "paths": {
+    "/feedback": {
+      "post": {
+        "summary": "Отправить голосовой фидбэк",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "audio_url": { "type": "string" },
+                  "shop_id": { "type": "string" },
+                  "device_id": { "type": "string" },
+                  "is_anonymous": { "type": "boolean" }
+                },
+                "required": ["audio_url", "shop_id", "device_id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешная запись фидбэка"
+          }
+        }
+      }
+    },
+    "/feedback/{shop_id}": {
+      "get": {
+        "summary": "Получить все фидбэки по магазину",
+        "parameters": [
+          {
+            "name": "shop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список фидбэков"
+          }
+        }
+      }
+    }
+  }
+}
