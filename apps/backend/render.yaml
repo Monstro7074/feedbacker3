@@ -1,7 +1,7 @@
 # render.yaml — Blueprint для деплоя Feedbacker на Render
 services:
   - type: web
-    name: feedbacker-backend
+    name: feedbacker3
     env: node
     plan: free               # можно поменять на starter/standard позже
     autoDeploy: true
