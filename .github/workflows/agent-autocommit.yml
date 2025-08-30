@@ -24,21 +24,28 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: agent-autocommit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   apply-and-commit:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
+          persist-credentials: false  # <- важное: не использовать дефолтный GITHUB_TOKEN
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: '${{ github.event.inputs.workdir }}/package-lock.json'
+          cache-dependency-path: ${{ github.event.inputs.workdir }}/package-lock.json
 
       - name: Install deps (if package.json exists)
         run: |
@@ -51,7 +58,6 @@ jobs:
         run: |
           set -e
           cd "${{ github.event.inputs.workdir }}"
-          # Выполним набор команд, если они заданы
           echo "${{ github.event.inputs.commands }}" | while IFS= read -r cmd; do
             [ -z "$cmd" ] && continue
             echo "→ $cmd"
@@ -61,11 +67,10 @@ jobs:
       - name: Auto-commit changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
+          token: ${{ secrets.AGENT_GITHUB_TOKEN }}   # <- передаём PAT корректно
           commit_message: ${{ github.event.inputs.commit_message }}
           branch: ${{ github.event.inputs.branch }}
           commit_user_name: "feedbacker-agent"
           commit_user_email: "agent@users.noreply.github.com"
           commit_options: "--no-verify"
           push_options: "--force-with-lease"
-        env:
-          GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
