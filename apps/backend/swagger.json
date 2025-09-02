@@ -1,57 +1,118 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "Feedbacker Mock API",
+    "title": "Feedbacker API",
     "version": "1.0.0",
     "description": "API для сбора голосовых отзывов из примерочных"
   },
+  "servers": [
+    { "url": "https://feedbacker3.onrender.com" }
+  ],
   "paths": {
     "/feedback": {
       "post": {
-        "summary": "Отправить голосовой фидбэк",
+        "summary": "Загрузить голосовой фидбэк",
+        "description": "multipart/form-data: audio (≤20MB mp3/wav/ogg/webm/mp4/m4a), shop_id обязателен",
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": {
+            "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "required": ["audio", "shop_id"],
                 "properties": {
-                  "audio_url": { "type": "string" },
-                  "shop_id": { "type": "string" },
-                  "device_id": { "type": "string" },
-                  "is_anonymous": { "type": "boolean" }
-                },
-                "required": ["audio_url", "shop_id", "device_id"]
+                  "audio": { "type": "string", "format": "binary" },
+                  "shop_id": { "type": "string", "example": "shop_001" },
+                  "device_id": { "type": "string", "nullable": true, "example": "kiosk-42" },
+                  "is_anonymous": { "type": "boolean", "nullable": true, "example": true }
+                }
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Успешная запись фидбэка"
-          }
+            "description": "ОК",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "feedback_id": { "type": "string", "example": "fbk_01H..." }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Ошибка валидации (например, нет shop_id или файла)" },
+          "415": { "description": "Неподдерживаемый тип файла" },
+          "429": { "description": "Сработал rate-limit" },
+          "500": { "description": "Внутренняя ошибка (Supabase/AAI и т.п.)" }
+        }
+      },
+      "get": {
+        "summary": "Лента фидбэков (без текста)",
+        "parameters": [
+          { "name": "since", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "Список фидбэков (id,timestamp,sentiment,emotion_score)" }
         }
       }
     },
     "/feedback/{shop_id}": {
       "get": {
-        "summary": "Получить все фидбэки по магазину",
+        "summary": "Лента фидбэков по конкретному магазину",
         "parameters": [
-          {
-            "name": "shop_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
+          { "name": "shop_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "since", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } }
         ],
-        "responses": {
-          "200": {
-            "description": "Список фидбэков"
-          }
-        }
+        "responses": { "200": { "description": "Список" } }
       }
+    },
+    "/feedback/full/{id}": {
+      "get": {
+        "summary": "Полный объект фидбэка",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "JSON с полями транскрипта" }, "404": { "description": "Нет записи" } }
+      }
+    },
+    "/feedback/get-audio/{id}": {
+      "get": {
+        "summary": "Подписанная ссылка на аудио (60 сек)",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "{ signedUrl }" }, "404": { "description": "Нет записи/файла" } }
+      }
+    },
+    "/feedback/debug/list": {
+      "get": {
+        "summary": "Отладочный список",
+        "parameters": [
+          { "name": "shop_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/feedback/debug/audit/{id}": {
+      "get": {
+        "summary": "Отладочная карточка",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Нет записи" } }
+      }
+    },
+    "/health": {
+      "get": { "summary": "Healthcheck", "responses": { "200": { "description": "OK" } } }
     }
   }
 }
