@@ -105,3 +105,19 @@ jobs:
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}'
+            
+      - name: Postman (Newman) • One-Click sanity
+        working-directory: apps/backend/postman
+        run: |
+          npx --yes newman run Feedbacker_OneClick_0902.postman_collection.json \
+            -e Feedbacker_ENV_0902.postman_environment.json \
+            --timeout-request 15000 --timeout 180000 --delay-request 300 \
+            --reporters cli,junit --reporter-junit-export ../../newman-results.xml
+
+      - name: Upload Newman JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newman-junit
+          path: apps/backend/newman-results.xml
+
