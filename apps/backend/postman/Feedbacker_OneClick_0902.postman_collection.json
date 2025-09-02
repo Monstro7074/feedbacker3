@@ -1,0 +1,108 @@
+{
+  "info": {
+    "_postman_id": "fbk-collection-0902",
+    "name": "Feedbacker • One-Click • 0902 (X-Request-ID ready)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Sanity-сценарий для прод-сервиса Feedbacker3.onrender.com с проверкой X-Request-ID."
+  },
+  "item": [
+    {
+      "name": "01) GET /health",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/health", "host": ["{{FEEDBACK_API_URL}}"], "path": ["health"] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.test('Body has ok', function(){ pm.expect(pm.response.text()).to.include('ok'); });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "02) GET / (root)",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/", "host": ["{{FEEDBACK_API_URL}}"], "path": [""] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "03) POST /feedback (multipart)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "formdata", "formdata": [
+          { "key": "shop_id", "value": "{{SHOP_ID}}", "type": "text" },
+          { "key": "is_anonymous", "value": "true", "type": "text" },
+          { "key": "audio", "type": "file", "src": "testaudio_silence_1s.wav" }
+        ]},
+        "url": { "raw": "{{FEEDBACK_API_URL}}/feedback", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback"] }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('Has feedback_id', function(){ var json=pm.response.json(); pm.expect(json).to.have.property('feedback_id'); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "var id = pm.response.json().feedback_id; pm.environment.set('FEEDBACK_ID', id);",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "04) GET /feedback (list)",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback?limit={{LIMIT}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback"], "query": [{ "key": "limit", "value": "{{LIMIT}}" }] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "05) GET /feedback/:shop_id (list)",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback/{{SHOP_ID}}?limit={{LIMIT}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback","{{SHOP_ID}}"], "query": [{ "key": "limit", "value": "{{LIMIT}}" }] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "06) GET /feedback/full/:id",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback/full/{{FEEDBACK_ID}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback","full","{{FEEDBACK_ID}}"] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "07) GET /feedback/get-audio/:id",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback/get-audio/{{FEEDBACK_ID}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback","get-audio","{{FEEDBACK_ID}}"] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.test('Has signedUrl', function(){ var json=pm.response.json(); pm.expect(json).to.have.property('signedUrl'); });",
+        "pm.environment.set('SIGNED_URL', pm.response.json().signedUrl);",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "08) DEBUG /feedback/debug/list",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback/debug/list?shop_id={{SHOP_ID}}&limit={{LIMIT}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback","debug","list"], "query": [
+        { "key": "shop_id", "value": "{{SHOP_ID}}" },
+        { "key": "limit", "value": "{{LIMIT}}" }
+      ]}},
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    },
+    {
+      "name": "09) DEBUG /feedback/debug/audit/:id",
+      "request": { "method": "GET", "header": [], "url": { "raw": "{{FEEDBACK_API_URL}}/feedback/debug/audit/{{FEEDBACK_ID}}", "host": ["{{FEEDBACK_API_URL}}"], "path": ["feedback","debug","audit","{{FEEDBACK_ID}}"] } },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Status is 200', function(){ pm.response.to.have.status(200); });",
+        "pm.test('X-Request-ID exists', function(){ pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true; });",
+        "pm.environment.set('LAST_REQUEST_ID', pm.response.headers.get('X-Request-ID'));"
+      ]}}]
+    }
+  ]
+}
