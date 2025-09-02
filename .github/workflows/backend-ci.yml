@@ -35,7 +35,6 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          # ВКЛЮЧАЕМ кеш ТОЛЬКО если есть lockfile (иначе setup-node ошибается)
           cache-dependency-path: |
             apps/backend/package-lock.json
 
@@ -54,47 +53,7 @@ jobs:
           node --check server.js
           node --check routes/feedback.js
 
-      - name: Warm up backend (retry /health)
-        env:
-          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
-        run: |
-          echo "Warming up $FEEDBACK_API_URL ..."
-          for i in {1..30}; do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "$FEEDBACK_API_URL/health" || true)
-            echo "Attempt $i -> HTTP $code"
-            if [ "$code" = "200" ]; then exit 0; fi
-            sleep 5
-          done
-          echo "Backend is not ready after retries"; exit 1
-
-      - name: Run Postman sanity (with JUnit report)
-        if: ${{ hashFiles('apps/backend/postman/*.json') != '' }}
-        run: |
-          npx --yes newman run postman/Feedbacker_OneClick.postman_collection.json \
-            -e postman/Feedbacker_ENV.postman_environment.json \
-            --timeout-request 15000 --timeout 180000 \
-            --delay-request 300 \
-            --reporters cli,junit \
-            --reporter-junit-export newman-results.xml
-        env:
-          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
-          TELEGRAM_ALERT_THRESHOLD: ${{ secrets.TELEGRAM_ALERT_THRESHOLD }}
-
-      - name: Upload Newman report
-        uses: actions/upload-artifact@v4
-        with:
-          name: newman-results
-          path: apps/backend/newman-results.xml
-
-      - name: Quick debug endpoints
-        if: ${{ success() }}
-        env:
-          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
-        run: |
-          set -x
-          curl -i "$FEEDBACK_API_URL/health" || true
-          curl -i "$FEEDBACK_API_URL/" || true
-
+      # === DEPLOY TO RENDER ===
       - name: Deploy to Render
         if: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feedbacker-ci') && success() }}
         env:
@@ -105,14 +64,33 @@ jobs:
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}'
-            
+
+      # === WARMUP AFTER DEPLOY ===
+      - name: Warm up backend (retry /health after deploy)
+        env:
+          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
+        run: |
+          echo "Warming up $FEEDBACK_API_URL ..."
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "$FEEDBACK_API_URL/health" || true)
+            echo "Attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "Backend is not ready after retries"; exit 1
+
+      # === POSTMAN / NEWMAN SANITY (ONE-CLICK 0902) ===
       - name: Postman (Newman) • One-Click sanity
+        if: ${{ hashFiles('apps/backend/postman/*.json') != '' }}
         working-directory: apps/backend/postman
         run: |
           npx --yes newman run Feedbacker_OneClick_0902.postman_collection.json \
             -e Feedbacker_ENV_0902.postman_environment.json \
             --timeout-request 15000 --timeout 180000 --delay-request 300 \
             --reporters cli,junit --reporter-junit-export ../../newman-results.xml
+        env:
+          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
+          TELEGRAM_ALERT_THRESHOLD: ${{ secrets.TELEGRAM_ALERT_THRESHOLD }}
 
       - name: Upload Newman JUnit
         if: always()
@@ -121,3 +99,12 @@ jobs:
           name: newman-junit
           path: apps/backend/newman-results.xml
 
+      # (Опционально) быстрый дымовой вывод для дебага
+      - name: Quick debug endpoints
+        if: ${{ always() }}
+        env:
+          FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
+        run: |
+          set -x
+          curl -i "$FEEDBACK_API_URL/health" || true
+          curl -i "$FEEDBACK_API_URL/" || true
