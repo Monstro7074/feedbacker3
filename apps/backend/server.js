@@ -7,6 +7,9 @@ import fs from 'fs';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import feedbackRoutes from './routes/feedback.js';
+import { requestIdMiddleware } from './middleware/requestId.js';
+import { logger } from './utils/logger.js';
+import onFinished from 'on-finished';
 
 dotenv.config();
 const app = express();
@@ -57,7 +60,31 @@ const corsOptions = {
   credentials: true,
   maxAge: 600
 };
+
+/**
+ * Подключаем middleware и access-лог импорты + app.use после gzip/CORS/ratelimit и до роутов
+ */
 app.use(cors(corsOptions));
+
+app.use(requestIdMiddleware);
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  logger.info(req.id, '📥 request:start', {
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    ua: req.headers['user-agent']
+  });
+  onFinished(res, () => {
+    const dur = Date.now() - start;
+    logger.info(req.id, '📤 request:finish', {
+      status: res.statusCode,
+      duration_ms: dur
+    });
+  });
+  next();
+});
 
 // Универсальная обработка preflight без path-to-regexp "*"
 app.use((req, res, next) => {
