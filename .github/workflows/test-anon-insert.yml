@@ -1,0 +1,40 @@
+name: Test anon insert lock
+
+on:
+  workflow_dispatch: # можно запускать руками из вкладки Actions
+
+jobs:
+  check-anon-insert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run anon insert test
+        run: |
+          npm install @supabase/supabase-js
+          node -e "
+          import { createClient } from '@supabase/supabase-js';
+          const url = process.env.SUPABASE_URL;
+          const anon = process.env.SUPABASE_KEY;
+          const c = createClient(url, anon);
+          const run = async () => {
+            const { error } = await c.from('feedbacks').insert([{ shop_id:'test', timestamp:new Date().toISOString() }]);
+            if (error) {
+              console.log('✅ OK: insert заблокирован →', error.message);
+            } else {
+              console.error('❌ FAIL: anon смог вставить (так быть не должно)');
+              process.exit(1);
+            }
+          };
+          run();
+          "
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
