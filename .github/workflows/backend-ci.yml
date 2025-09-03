@@ -52,6 +52,12 @@ jobs:
         run: |
           node --check server.js
           node --check routes/feedback.js
+      
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npx vitest run
 
       # === DEPLOY TO RENDER ===
       - name: Deploy to Render
