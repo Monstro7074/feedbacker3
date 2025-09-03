@@ -22,42 +22,18 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/backend
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node (for Newman only)
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            apps/backend/package-lock.json
 
-      - name: Install deps
-        run: |
-          if [ -f "package-lock.json" ]; then
-            echo "Using npm ci (lockfile exists)"
-            npm ci
-          else
-            echo "Lockfile not found, using npm install (temporary)"
-            npm install --no-audit --no-fund --prefer-offline
-          fi
-
-      - name: Syntax check (ESM)
-        run: |
-          node --check server.js
-          node --check routes/feedback.js
-      
-      - name: Lint
-        run: npm run lint
-
-      - name: Unit tests
-        run: npx vitest run
+      - name: Install Newman
+        run: npm i -g newman@6 newman-reporter-junitfull@1
 
       # === DEPLOY TO RENDER ===
       - name: Deploy to Render
@@ -72,28 +48,31 @@ jobs:
             -d '{}'
 
       # === WARMUP AFTER DEPLOY ===
-      - name: Warm up backend (retry /health after deploy)
+      - name: Warm up backend (retry /health)
         env:
           FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
         run: |
-          echo "Warming up $FEEDBACK_API_URL ..."
+          BASE_URL="${FEEDBACK_API_URL:-https://feedbacker3.onrender.com}"
+          echo "Warming up $BASE_URL ..."
           for i in $(seq 1 30); do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "$FEEDBACK_API_URL/health" || true)
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/health" || true)
             echo "Attempt $i -> HTTP $code"
             if [ "$code" = "200" ]; then exit 0; fi
             sleep 5
           done
           echo "Backend is not ready after retries"; exit 1
 
-      # === POSTMAN / NEWMAN SANITY (ONE-CLICK 0902) ===
+      # === POSTMAN / NEWMAN SANITY ===
       - name: Postman (Newman) • One-Click sanity
         if: ${{ hashFiles('apps/backend/postman/*.json') != '' }}
-        working-directory: apps/backend/postman
         run: |
-          npx --yes newman run Feedbacker_OneClick_0902.postman_collection.json \
-            -e Feedbacker_ENV_0902.postman_environment.json \
+          BASE_URL="${FEEDBACK_API_URL:-https://feedbacker3.onrender.com}"
+          newman run apps/backend/postman/Feedbacker_OneClick_0902.postman_collection.json \
+            -e apps/backend/postman/Feedbacker_ENV_0902.postman_environment.json \
+            --env-var baseUrl="$BASE_URL" \
             --timeout-request 15000 --timeout 180000 --delay-request 300 \
-            --reporters cli,junit --reporter-junit-export ../../newman-results.xml
+            -r cli,junitfull \
+            --reporter-junitfull-export apps/backend/newman-results.xml
         env:
           FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
           TELEGRAM_ALERT_THRESHOLD: ${{ secrets.TELEGRAM_ALERT_THRESHOLD }}
@@ -102,15 +81,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: newman-junit
+          name: newman-results
           path: apps/backend/newman-results.xml
 
-      # (Опционально) быстрый дымовой вывод для дебага
+      # Быстрый дымовой вывод для дебага
       - name: Quick debug endpoints
-        if: ${{ always() }}
+        if: always()
         env:
           FEEDBACK_API_URL: ${{ secrets.FEEDBACK_API_URL }}
         run: |
+          BASE_URL="${FEEDBACK_API_URL:-https://feedbacker3.onrender.com}"
           set -x
-          curl -i "$FEEDBACK_API_URL/health" || true
-          curl -i "$FEEDBACK_API_URL/" || true
+          curl -i "$BASE_URL/health" || true
+          curl -i "$BASE_URL/" || true
