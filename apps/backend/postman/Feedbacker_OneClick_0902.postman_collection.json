@@ -1,0 +1,34 @@
+{
+  "info": {
+    "name": "Feedbacker OneClick 0902 Fix1",
+    "_postman_id": "fix1-collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{FEEDBACK_API_URL}}/health"
+      }
+    },
+    {
+      "name": "POST Feedback (multipart)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {"key": "shop_id", "value": "shop_demo_001", "type": "text"},
+            {"key": "device_id", "value": "mirror_01", "type": "text"},
+            {"key": "is_anonymous", "value": "true", "type": "text"},
+            {"key": "audio", "type": "file", "src": "testaudio_silence_1s.wav"}
+          ]
+        },
+        "url": "{{FEEDBACK_API_URL}}/feedback"
+      }
+    }
+  ]
+}
