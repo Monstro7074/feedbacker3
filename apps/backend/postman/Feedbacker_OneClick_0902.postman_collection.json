@@ -24,7 +24,7 @@
             {"key": "shop_id", "value": "shop_demo_001", "type": "text"},
             {"key": "device_id", "value": "mirror_01", "type": "text"},
             {"key": "is_anonymous", "value": "true", "type": "text"},
-            {"key": "audio", "type": "file", "src": "testaudio_silence_1s.wav"}
+            {"key": "audio", "type": "file", "src": "testaudio50sec.mp3"}
           ]
         },
         "url": "{{FEEDBACK_API_URL}}/feedback"
