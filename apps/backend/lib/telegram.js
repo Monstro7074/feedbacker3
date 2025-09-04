@@ -6,56 +6,23 @@ const TOKEN = process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const BUCKET = process.env.SUPABASE_BUCKET;
 
+// желаемые значения
+const FOURTEEN_DAYS = 14 * 24 * 60 * 60;     // 1209600 сек
+const SEVEN_DAYS    = 7  * 24 * 60 * 60;     // 604800 сек
+
 function getBot() {
   if (!TOKEN || !CHAT_ID) {
-    console.warn('⚠️ TELEGRAM_TOKEN/TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы — отправка невозможна');
+    console.warn('⚠️ TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы — алерты отключены');
     return null;
   }
   return new TelegramBot(TOKEN, { polling: false });
 }
 
-/**
- * Выбор заголовка по эмоции/контенту
- * - sentiment: 'негатив' | 'позитив' | 'нейтральный' (или отсутствует)
- * - emotion_score: [0..1] (чем ниже — тем хуже)
- * - дополнительно ищем «красные» слова в summary/transcript
- */
-function chooseTitle(feedback) {
-  const s = String(feedback.sentiment || '').toLowerCase();
-  const score = typeof feedback.emotion_score === 'number' ? feedback.emotion_score : null;
-  const text = `${feedback.summary || ''} ${feedback.transcript || ''}`.toLowerCase();
-
-  const RED_FLAGS = [
-    'плохо', 'ужас', 'возврат', 'вернуть', 'жалоб', 'скандал', 'разочар', 'ненрав',
-    'не нравится', 'слом', 'брак', 'качество', 'длинн', 'коротк', 'мал', 'велика'
-  ];
-  const hasRed = RED_FLAGS.some(w => text.includes(w));
-
-  // Жёсткие правила по sentiment
-  if (s.includes('негатив')) return '🚨 *Критичный отзыв!*';
-  if (s.includes('позитив')) return '💚 *Положительный отзыв*';
-  if (s.includes('нейтрал')) return '😐 *Нейтральный отзыв*';
-
-  // Если sentiment не задан – fallback по score/контенту
-  if (score !== null) {
-    if (score < 0.45 || hasRed) return '🚨 *Критичный отзыв!*';
-    if (score >= 0.7) return '💚 *Положительный отзыв*';
-    return '😐 *Нейтральный отзыв*';
-  }
-  return hasRed ? '🚨 *Критичный отзыв!*' : '😐 *Нейтральный отзыв*';
-}
-
-function fmtScore(n) {
-  if (typeof n !== 'number' || Number.isNaN(n)) return '—';
-  return n.toFixed(2);
-}
-
-/**
- * Примитивное экранирование Markdown (под формат parse_mode: 'Markdown')
- * Достаточно убрать символы, которые чаще всего ломают разметку.
- */
-function md(s = '') {
-  return String(s).replace(/(\*|_|\[|\]|\(|\)|`|>)/g, '\\$1');
+function pickTitle(sentiment, summary = '') {
+  const s = String(sentiment || '').toLowerCase();
+  if (s.includes('негатив') || s.includes('negative')) return '🚨 Критичный отзыв!';
+  if (s.includes('полож')   || s.includes('positive')) return '💚 Положительный отзыв';
+  return '😐 Нейтральный отзыв';
 }
 
 export async function sendAlert(feedback) {
@@ -63,55 +30,62 @@ export async function sendAlert(feedback) {
   if (!bot) return;
 
   try {
-    // 1) Получаем одноразовую ссылку на аудио
+    // Путь к файлу в бакете
     let audioPath = feedback.audio_path;
     if (!audioPath && feedback.audio_url) {
-      // если кто-то сохранил публикуемую ссылку — вырежем путь внутри бакета
       audioPath = feedback.audio_url.replace(
         /^https?:\/\/[^/]+\/storage\/v1\/object\/public\/[^/]+\//,
         ''
       );
     }
 
-    let audioUrl = 'Нет ссылки';
-    if (audioPath) {
-      const { data: s, error: se } = await supabaseAdmin
-        .storage.from(BUCKET)
-        .createSignedUrl(audioPath, 60);
-      if (!se && s?.signedUrl) audioUrl = s.signedUrl;
-    }
-
-    // 2) Короткая расшифровка (макс 4 строки)
-    let transcriptBlock = '';
-    if (feedback.transcript) {
-      const lines = String(feedback.transcript).split('\n').map(l => l.trim()).filter(Boolean);
-      const trimmed = lines.length > 4 ? [...lines.slice(0, 4), '…'] : lines;
-      transcriptBlock = `\n🗣 *Расшифровка:*\n${md(trimmed.join('\n'))}`;
-    }
-
-    // 3) Заголовок
-    const title = chooseTitle(feedback);
-
-    // 4) Ссылка на полную карточку
     const base = process.env.FEEDBACK_API_URL || 'https://example.com';
-    const fullTranscriptUrl = `${base}/feedback/full/${feedback.id}`;
 
-    // 5) Тело сообщения (Markdown)
+    // По умолчанию используем «вечную» ссылку через редирект-эндпоинт
+    let audioUrl = `${base}/feedback/redirect-audio/${feedback.id}`;
+
+    // Пытаемся дать прямую ссылку на 14 дней (если провайдер разрешит)
+    if (audioPath) {
+      // сначала пробуем 14 дней
+      let res = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(audioPath, FOURTEEN_DAYS);
+      if (res.error) {
+        // часто у Supabase лимит 7 дней — пробуем 7 дней
+        console.warn('⚠️ createSignedUrl(14d) error:', res.error.message);
+        res = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(audioPath, SEVEN_DAYS);
+      }
+      if (!res.error && res.data?.signedUrl) {
+        audioUrl = res.data.signedUrl;
+      } else {
+        // оставляем редирект — он на каждый клик создаст свежий URL
+        console.warn('⚠️ Переходим на redirect-audio ссылку (будет генерить on-demand)');
+      }
+    }
+
+    // короткая расшифровка (до 4 строк)
+    let transcriptText = '';
+    if (feedback.transcript) {
+      const lines = String(feedback.transcript).split('\n');
+      transcriptText =
+        '\n🗣 *Расшифровка:*\n' +
+        (lines.length > 4 ? `${lines.slice(0, 4).join('\n')}…` : lines.join('\n'));
+    }
+
+    const fullTranscriptUrl = `${base}/feedback/full/${feedback.id}`;
+    const title = pickTitle(feedback.sentiment, feedback.summary);
+
     const msg =
 `${title}
-*Магазин:* ${md(feedback.shop_id)}
-*Устройство:* ${md(feedback.device_id || 'неизвестно')}
+*Магазин:* ${feedback.shop_id}
+*Устройство:* ${feedback.device_id || 'неизвестно'}
 *Анонимно:* ${feedback.is_anonymous ? 'Да' : 'Нет'}
-*Оценка эмоций:* ${fmtScore(feedback.emotion_score)}
-*Теги:* ${md((feedback.tags || []).join(', ') || 'нет')}
-*Краткое содержание:* ${md(feedback.summary || 'нет')}${transcriptBlock}
+*Оценка эмоций:* ${feedback.emotion_score ?? '—'}
+*Теги:* ${feedback.tags?.join(', ') || 'нет'}
+*Краткое содержание:* ${feedback.summary || 'нет'}${transcriptText}
 
 🎧 [Слушать аудио](${audioUrl})`;
 
-    // 6) Отправляем ВСЕГДА (без порогов/условий)
     await bot.sendMessage(CHAT_ID, msg, {
       parse_mode: 'Markdown',
-      disable_web_page_preview: true,
       reply_markup: {
         inline_keyboard: [[{ text: '📄 Полная расшифровка', url: fullTranscriptUrl }]]
       }
@@ -119,6 +93,6 @@ export async function sendAlert(feedback) {
 
     console.log('✅ Telegram alert отправлен');
   } catch (err) {
-    console.error('❌ Ошибка при отправке Telegram alert:', err?.message || err);
+    console.error('❌ Ошибка при отправке Telegram alert:', err.message);
   }
 }
