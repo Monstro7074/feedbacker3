@@ -82,7 +82,7 @@ router.get("/full/:id", async (req, res) => {
   }
 });
 
-// 🎯 GET /feedback/get-audio/:id
+// 🎯 GET /feedback/get-audio/:id?ttl=1209600
 router.get("/get-audio/:id", async (req, res) => {
   console.log("📌 [GET /feedback/get-audio/:id] ID:", req.params.id);
   try {
@@ -97,17 +97,21 @@ router.get("/get-audio/:id", async (req, res) => {
       return res.status(404).json({ error: "Фидбэк не найден" });
     }
 
+    const requestedTtl = Number.parseInt(req.query.ttl || process.env.SIGNED_URL_TTL || "1209600", 10);
+    // безопасные рамки: от 60 сек до 14 дней
+    const ttl = Math.min(Math.max(requestedTtl || 60, 60), 1209600);
+
     const { data: s, error: se } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET)
-      .createSignedUrl(data.audio_path, 60);
+      .createSignedUrl(data.audio_path, ttl);
 
     if (se) {
       console.error("❌ Ошибка создания signed URL:", se.message);
       return res.status(500).json({ error: "Не удалось создать signed URL" });
     }
 
-    console.log("🔐 Signed URL (60 сек):", s.signedUrl);
-    return res.json({ signedUrl: s.signedUrl });
+    console.log(`🔐 Signed URL (${ttl} сек):`, s.signedUrl);
+    return res.json({ signedUrl: s.signedUrl, ttl });
   } catch (err) {
     console.error("❌ Ошибка в GET /feedback/get-audio/:id:", err.message);
     return res.status(500).json({ error: "Ошибка при получении аудио" });
