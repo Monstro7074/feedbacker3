@@ -116,4 +116,6 @@ export async function sendAlert(feedback) {
 
     console.log('✅ Telegram alert отправлен');
   } catch (err) {
-    console.error('❌ Ошибка при отправке Telegram alert:', err?.response?.body |
+    console.error('❌ Ошибка при отправке Telegram alert:', err?.response?.body || err.message);
+  }
+}
