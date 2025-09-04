@@ -118,6 +118,34 @@ router.get("/get-audio/:id", async (req, res) => {
   }
 });
 
+// 🔁 GET /feedback/redirect-audio/:id — всегда работает, т.к. генерит URL на каждый клик
+router.get("/redirect-audio/:id", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("feedbacks")
+      .select("audio_path")
+      .eq("id", req.params.id)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).send("Not found");
+    }
+
+    // короткий TTL достаточно, т.к. редирект срабатывает прямо сейчас
+    const { data: s, error: se } = await supabase.storage
+      .from(process.env.SUPABASE_BUCKET)
+      .createSignedUrl(data.audio_path, 300); // 5 минут
+
+    if (se || !s?.signedUrl) {
+      return res.status(500).send("Failed to sign");
+    }
+
+    return res.redirect(302, s.signedUrl);
+  } catch (e) {
+    return res.status(500).send("Internal error");
+  }
+});
+
 // 📥 POST /feedback
 router.post("/", uploadAudio, async (req, res) => {
   console.log("📌 [POST /feedback] Получен запрос");
