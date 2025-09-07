@@ -11,6 +11,7 @@ import { mockClaude } from "../mock/claude.js";
 import { supabase } from "../lib/supabase.js";
 import { sendAlert } from "../lib/telegram.js";
 import { uploadAudioToSupabase } from "../lib/storage.js";
+import { hfAnalyzeSentiment } from "../lib/sentiment-hf.js";
 
 const router = express.Router();
 
@@ -190,7 +191,20 @@ router.post("/", uploadAudio, async (req, res) => {
     }
 
     // 3️⃣ Анализ (пока mock)
-    const analysis = mockClaude(transcript);
+    let analysisBase;
+    try {
+    analysisBase = await hfAnalyzeSentiment(transcript);
+    } catch (e) {
+    console.warn("⚠️ HF sentiment failed, fallback to mock:", e.message);
+    analysisBase = { sentiment: 'нейтральный', emotion_score: 0.5 };
+    }
+
+    // Теги/summary оставим как есть из mock, чтобы MVP давал короткие инсайты:
+    const mockExtras = mockClaude(transcript); // вернёт summary/tags
+    const analysis = { ...analysisBase, tags: mockExtras.tags, summary: mockExtras.summary };
+
+    console.log("📊 Анализ (HF):", analysis);
+
     console.log("📊 Анализ:", analysis);
 
     // 4️⃣ Сохраняем в БД
