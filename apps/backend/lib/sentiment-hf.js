@@ -1,128 +1,129 @@
 // apps/backend/lib/sentiment-hf.js
-// Стабильный вызов Hugging Face Inference API с приоритетом рабочей модели,
-// кэшированием удачной, нормализацией меток и быстрой деградацией.
+// Мини-клиент к Hugging Face Inference API с очередью моделей и нормализацией 0..1
 
-const API_BASE = 'https://api-inference.huggingface.co/models/';
-let lastGoodModel = null; // кэшируем удачную модель в памяти
+const HF_URL = 'https://api-inference.huggingface.co/models';
 
-function parseEnvList(name) {
-  const v = (process.env[name] || '').trim();
-  if (!v) return [];
-  return v.split(',').map(s => s.trim()).filter(Boolean);
+const MODELS = [
+  // СТАВИМ ПЕРВЫМ тот, что у тебя стабильно срабатывает
+  { id: 'nlptown/bert-base-multilingual-uncased-sentiment', type: 'stars5' },
+  // Потом — xlm-roberta (бывает абортится по таймауту)
+  { id: 'cardiffnlp/twitter-xlm-roberta-base-sentiment', type: '3class' },
+];
+
+const DEFAULT_TIMEOUT_MS = 8000; // небольшой таймаут на модель, чтобы быстро переключаться
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function withTimeout(promise, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return Promise.race([
+    promise(ctrl.signal).finally(() => clearTimeout(t)),
+    // на всякий: чтобы не висеть навсегда
+  ]);
 }
 
-function getModelList() {
-  // Позволяем задавать явный список через ENV (в приоритете)
-  const explicit = parseEnvList('HF_MODEL_IDS');
-  if (explicit.length) return explicit;
+async function callHF(modelId, text, signal) {
+  const key = process.env.HUGGINGFACE_API_KEY || '';
+  if (!key) throw new Error('HUGGINGFACE_API_KEY не задан');
 
-  // Ранее ты пробовал модели, что дают 404. Уберём их из дефолта.
-  // Приоритет — стабильная многоязычная:
-  return [
-    'cardiffnlp/twitter-xlm-roberta-base-sentiment',      // multilingual, OK в логах
-    'nlptown/bert-base-multilingual-uncased-sentiment'    // 1..5 stars → маппим в 3 класса
-  ];
-}
-
-// Приводим разные схемы меток к RU: положительный / нейтральный / негатив
-function normalizeLabel(raw) {
-  const l = String(raw || '').toLowerCase();
-
-  if (/(^|\W)pos(itive)?(\W|$)/.test(l) || l.includes('полож')) return 'положительный';
-  if (/(^|\W)neu(tral)?(\W|$)/.test(l) || l.includes('нейтр'))  return 'нейтральный';
-  if (/(^|\W)neg(ative)?(\W|$)/.test(l) || l.includes('нег'))   return 'негатив';
-
-  // nlptown: "1 star"..."5 stars"
-  const m = l.match(/([1-5])\s*star/);
-  if (m) {
-    const s = +m[1];
-    if (s <= 2) return 'негатив';
-    if (s === 3) return 'нейтральный';
-    return 'положительный';
-  }
-
-  return 'нейтральный';
-}
-
-// Сводим к 0..1 (на графики и для совместимости с телегой)
-function toEmotionScore(label, score) {
-  const conf = typeof score === 'number' ? Math.min(1, Math.max(0, score)) : 0.8;
-  if (label.startsWith('полож')) return +(0.5 + 0.5 * conf).toFixed(2);
-  if (label.startsWith('нег'))   return +(0.5 - 0.5 * conf).toFixed(2);
-  return 0.50;
-}
-
-async function callModel(model, text, timeoutMs) {
-  const token = process.env.HF_API_TOKEN;
-  if (!token) throw new Error('HF_API_TOKEN is missing');
-
-  const url = API_BASE + encodeURIComponent(model);
-
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const tm = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-Wait-For-Model': 'true'
+  const res = await fetch(`${HF_URL}/${encodeURIComponent(modelId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      inputs: text,
+      options: {
+        wait_for_model: true, // критично: грузим модель и ждём
+        use_cache: true,
       },
-      body: JSON.stringify({
-        inputs: String(text || '').slice(0, 4000),
-        options: { wait_for_model: true }
-      }),
-      signal: controller?.signal
-    });
+    }),
+    signal,
+  });
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      const err = new Error(`HF ${res.status}: ${txt || res.statusText}`);
-      err.status = res.status;
-      throw err;
-    }
-
-    const data = await res.json();
-    const arr = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
-    if (!arr.length) throw new Error('HF empty response');
-
-    const top = arr.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-    const label = normalizeLabel(top?.label);
-    const emotion_score = toEmotionScore(label, top?.score);
-
-    return { label, emotion_score };
-  } finally {
-    if (tm) clearTimeout(tm);
+  // HF иногда отдаёт 503/524 на тёплый старт — дадим модели секунду и повторим 1 раз
+  if (res.status === 503 || res.status === 524) {
+    await sleep(1000);
+    return callHF(modelId, text, signal);
   }
+
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `${res.statusText}`);
+    throw new Error(`HF ${res.status}: ${msg}`);
+  }
+  return res.json();
+}
+
+function normalizeFromStars5(output) {
+  // Формат: массив массивов с метками "1 star" .. "5 stars"
+  // Возьмём взвешенное среднее и нормализуем к [0..1] как «позитивность».
+  // Потом переведём в 3 класса.
+  const arr = Array.isArray(output) ? output[0] : output;
+  if (!Array.isArray(arr)) throw new Error('Unexpected HF output (stars5)');
+
+  // {label: "5 stars", score: 0.72}, ...
+  let sum = 0, weight = 0;
+  for (const it of arr) {
+    const m = String(it.label || '').match(/(\d)/);
+    if (!m) continue;
+    const stars = Number(m[1]);
+    sum += stars * (it.score || 0);
+    weight += (it.score || 0);
+  }
+  const avgStars = weight > 0 ? sum / weight : 3; // среднее по вероятностям
+  const positivity = Math.max(0, Math.min(1, (avgStars - 1) / 4)); // 1..5 → 0..1
+
+  const sentiment = positivity > 0.6 ? 'позитив' : positivity < 0.4 ? 'негатив' : 'нейтральный';
+  // В твоей схеме emotion_score = 0..1 (оставим как «позитивность»)
+  return { sentiment, emotion_score: Number(positivity.toFixed(2)) };
+}
+
+function normalizeFrom3class(output) {
+  // Формат: [{label:"positive",score:..},{label:"neutral",...},{label:"negative",...}]
+  const arr = Array.isArray(output) ? output[0] : output;
+  if (!Array.isArray(arr)) throw new Error('Unexpected HF output (3class)');
+
+  const by = {};
+  for (const it of arr) by[String(it.label).toLowerCase()] = it.score || 0;
+
+  const pos = by.positive || by.pos || 0;
+  const neu = by.neutral || 0;
+  const neg = by.negative || by.neg || 0;
+
+  let sentiment = 'нейтральный';
+  if (pos >= neg && pos >= neu) sentiment = 'позитив';
+  else if (neg >= pos && neg >= neu) sentiment = 'негатив';
+
+  // emotion_score — возьмём «позитивность» = pos (или 1-neg), усредним для устойчивости:
+  const positivity = Math.max(0, Math.min(1, (pos + (1 - neg)) / 2));
+  return { sentiment, emotion_score: Number(positivity.toFixed(2)) };
 }
 
 export async function hfAnalyzeSentiment(text) {
-  const timeout = Number(process.env.HF_TIMEOUT_MS || 6000);
-
-  // Если уже знаем «хорошую» модель — пробуем её первой
-  const baseList = getModelList();
-  const models = lastGoodModel
-    ? [lastGoodModel, ...baseList.filter(m => m !== lastGoodModel)]
-    : baseList;
+  if (!text || !text.trim()) return { sentiment: 'нейтральный', emotion_score: 0.5 };
 
   let lastErr;
-  for (const model of models) {
+  for (const m of MODELS) {
     try {
-      const { label, emotion_score } = await callModel(model, text, timeout);
-      lastGoodModel = model; // кэшируем удачную
-      console.log(`✅ HF sentiment ok via model: ${model} -> ${label} (${emotion_score})`);
-      return { sentiment: label, emotion_score };
+      const out = await withTimeout(
+        (signal) => callHF(m.id, text, signal),
+        DEFAULT_TIMEOUT_MS
+      );
+      if (m.type === 'stars5') return normalizeFromStars5(out);
+      if (m.type === '3class') return normalizeFrom3class(out);
+      throw new Error('Unknown model type');
     } catch (e) {
       lastErr = e;
-      // тихо перескакиваем дальше на 404/503/аборт
-      const code = e?.status;
-      if (code) {
-        console.warn(`⚠️ HF model ${model} responded ${code}. Trying next…`);
+      const msg = String(e?.message || e);
+      if (/aborted/i.test(msg)) {
+        console.warn(`⚠️ HF model ${m.id} aborted by timeout. Trying next…`);
       } else {
-        console.warn(`⚠️ HF model ${model} error: ${e.message || e}. Trying next…`);
+        console.warn(`⚠️ HF model ${m.id} error: ${msg}. Trying next…`);
       }
+      continue;
     }
   }
-  throw lastErr || new Error('HF sentiment failed for all models');
+  throw lastErr || new Error('HF: all models failed');
 }
