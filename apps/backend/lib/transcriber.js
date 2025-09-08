@@ -23,28 +23,13 @@ function heuristicRU(text) {
   return { sentiment, emotion_score: Number(score.toFixed(2)), tags, summary };
 }
 
+// Оставляем mapAAI на всякий случай (на будущее), но больше не используем AAI-анализ.
 function mapAAI(result) {
-  const list = result?.sentiment_analysis_results || [];
-  if (!list.length) {
-    // нет модели анализа → эвристика
-    return heuristicRU(result?.text || '');
-  }
-  const toNum = s => (s === 'POSITIVE' ? 1 : s === 'NEGATIVE' ? 0 : 0.5);
-  const score = list.reduce((acc, x) => acc + toNum(x.sentiment), 0) / list.length;
-  const sentiment = score > 0.6 ? 'positive' : score < 0.4 ? 'negative' : 'neutral';
-
-  const ents = result?.entities || [];
-  const seen = new Set(); const tags = [];
-  for (const e of ents) {
-    const t = String(e.text || '').trim(); const key = t.toLowerCase();
-    if (t && !seen.has(key)) { tags.push(t); seen.add(key); if (tags.length >= 10) break; }
-  }
-
-  const summary = String(result?.text || '').replace(/\s+/g, ' ').slice(0, 300);
-  return { sentiment, emotion_score: Number(score.toFixed(2)), tags, summary };
+  return heuristicRU(result?.text || '');
 }
 
 async function createTranscript(payload) {
+  // ВАЖНО: оставляем те же endpoint'ы, которые у тебя уже работают в проде
   const res = await fetch('https://api.assemblyai.com/v2/transcript', {
     method: 'POST',
     headers: {
@@ -58,7 +43,7 @@ async function createTranscript(payload) {
 }
 
 /**
- * Транскрипт + анализ (с умным фоллбеком для ru)
+ * ТОЛЬКО транскрипт (без AAI sentiment/entity), анализ — нашей эвристикой.
  * Возвращает { text, analysis, raw }
  */
 export async function transcribeAudio(
@@ -71,38 +56,22 @@ export async function transcribeAudio(
 
     console.log('🎯 URL для AssemblyAI:', audioUrl);
 
-    // Пытаемся с анализом
-    let payload = {
+    // Создаём задание БЕЗ sentiment_analysis / entity_detection — чтобы не ловить варнинг и ошибки
+    const payload = {
       audio_url: audioUrl,
       language_code: 'ru',
       punctuate: true,
-      format_text: true,
-      sentiment_analysis: true,
-      entity_detection: true,
+      format_text: true
     };
 
-    let { ok, data } = await createTranscript(payload);
-
-    // Если язык не поддерживает анализ → убираем флаги и повторяем 1 раз
-    const errText = String(data?.error || '');
-    const analysisUnsupported =
-      /not available in this language|sentiment[_\s-]*analysis/i.test(errText) ||
-      /entity[_\s-]*detection/i.test(errText);
-
-    if (!ok && analysisUnsupported) {
-      console.warn('⚠️ sentiment_analysis недоступен для ru — пробую без анализа');
-      delete payload.sentiment_analysis;
-      delete payload.entity_detection;
-      ({ ok, data } = await createTranscript(payload));
-    }
-
+    const { ok, data } = await createTranscript(payload);
     if (!ok) throw new Error(`Ошибка создания транскрипта: ${data?.error || 'unknown'}`);
 
     const transcriptId = data.id;
     if (!transcriptId) throw new Error('Не получен transcript_id');
     console.log(`📡 AssemblyAI transcript_id: ${transcriptId}`);
 
-    // Ожидание
+    // Ожидание завершения
     const started = Date.now();
     let last = '';
     while (true) {
@@ -119,7 +88,7 @@ export async function transcribeAudio(
 
       if (js.status === 'completed') {
         const text = String(js.text || '');
-        const analysis = mapAAI(js);
+        const analysis = heuristicRU(text); // базовый анализ — как и раньше
         console.log('📝 Расшифровка получена (120симв):', text.replace(/\s+/g,' ').slice(0,120), '...');
         return { text, analysis, raw: js };
       }
