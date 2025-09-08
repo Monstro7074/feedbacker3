@@ -61,28 +61,37 @@ const uploadAudio = (req, res, next) => {
 
 /** ---------- Мини-анализатор для tags/summary по транскрипту ---------- */
 function extractTagsAndSummary(text) {
-  const t = String(text || "").toLowerCase();
+  const t = String(text || "").toLowerCase().trim();
 
-  // 1) Короткое summary: первые 1–2 предложения / до 180 символов
-  let summary = t.replace(/\s+/g, ' ').trim();
-  const sentences = summary.split(/[.!?…]+/).map(s => s.trim()).filter(Boolean);
-  summary = (sentences.slice(0, 2).join('. ') || summary).slice(0, 180);
+  // 1) Summary: первые 1–2 информативных предложения, максимум 180 символов
+  const rawSentences = t.split(/[.!?…]+/).map(s => s.trim()).filter(Boolean);
+  const sentences = rawSentences.filter(s =>
+    s.length >= 8 && !/^тест|^проверка|^запись|^пример/i.test(s)
+  );
+  let summary = (sentences.slice(0, 2).join('. ') || rawSentences.slice(0, 2).join('. ')).slice(0, 180);
+  if (summary && summary[0]) summary = summary[0].toUpperCase() + summary.slice(1);
+  if (summary.length === 180) summary = summary.replace(/\s+\S*$/, '') + '…';
 
-  // 2) Базовый набор "доменных" тегов (приоритетные маркеры)
+  // 2) Доменные маркеры (приоритет)
   const domain = [
     'качество','размер','цена','стоимость','доставка','срок','персонал','продавец',
     'консультант','возврат','обмен','брак','материал','посадка','удобство','цвет',
-    'швы','примерка','ассортимент','наличие'
+    'швы','примерка','ассортимент','наличие','упаковка','сервис'
   ];
-  const presentDomain = [];
-  for (const w of domain) if (t.includes(w)) presentDomain.push(w);
+  const domainHits = [];
+  for (const w of domain) if (t.includes(w)) domainHits.push(w);
 
-  // 3) Частотные слова длиной 5+, исключая стоп-слова
+  // 3) Частотные слова длиной 5+, без стоп-слов/мусора
   const stop = new Set([
-    'которые','который','которое','которые','только','просто','можно','нужно','сильно','очень',
-    'сегодня','вчера','буду','если','потому','кстати','будто','давайте','вообще','конечно',
-    'брюки','платье','джинсы','вещь','вещи', // общие слова, часто неинформативны
+    // общие русские
+    'которые','который','которое','только','просто','можно','нужно','очень','сильно','будто','давайте',
+    'сегодня','вчера','буду','если','потому','вообще','конечно','жалуйста','спасибо',
+    // наши мусорные
+    'слишком','проверка','тестируем','примерочный','отзыв','запись','клиент','покупатель',
+    // малоинформативные для одежды
+    'брюки','джинсы','платье','вещь','вещи','магазин','товары','покупка'
   ]);
+
   const tokens = t
     .replace(/[^\p{L}\s]+/gu, ' ')
     .split(/\s+/)
@@ -90,12 +99,16 @@ function extractTagsAndSummary(text) {
 
   const freq = new Map();
   for (const w of tokens) freq.set(w, (freq.get(w) || 0) + 1);
-  const top = [...freq.entries()].sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => x[0]);
+  const top = [...freq.entries()]
+    .sort((a,b)=>b[1]-a[1])
+    .map(x => x[0])
+    .filter(w => !domain.includes(w)) // доменные попадут отдельным списком
+    .slice(0, 10);
 
-  // 4) Смешиваем доменные и частотные, убираем повторы, берём топ-3
+  // 4) Сборка тегов: приоритет доменных, затем частотные, максимум 3
   const seen = new Set();
   const tags = [];
-  for (const w of [...presentDomain, ...top]) {
+  for (const w of [...domainHits, ...top]) {
     if (!seen.has(w)) { tags.push(w); seen.add(w); }
     if (tags.length >= 3) break;
   }
