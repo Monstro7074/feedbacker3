@@ -7,7 +7,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 
 import { transcribeAudio } from "../lib/transcriber.js";
-import { mockClaude } from "../mock/claude.js";
+// import { mockClaude } from "../mock/claude.js"; // больше не используем
 import { supabase } from "../lib/supabase.js";
 import { sendAlert } from "../lib/telegram.js";
 import { uploadAudioToSupabase } from "../lib/storage.js";
@@ -58,6 +58,50 @@ const uploadAudio = (req, res, next) => {
     return res.status(400).json({ error: err.message });
   });
 };
+
+/** ---------- Мини-анализатор для tags/summary по транскрипту ---------- */
+function extractTagsAndSummary(text) {
+  const t = String(text || "").toLowerCase();
+
+  // 1) Короткое summary: первые 1–2 предложения / до 180 символов
+  let summary = t.replace(/\s+/g, ' ').trim();
+  const sentences = summary.split(/[.!?…]+/).map(s => s.trim()).filter(Boolean);
+  summary = (sentences.slice(0, 2).join('. ') || summary).slice(0, 180);
+
+  // 2) Базовый набор "доменных" тегов (приоритетные маркеры)
+  const domain = [
+    'качество','размер','цена','стоимость','доставка','срок','персонал','продавец',
+    'консультант','возврат','обмен','брак','материал','посадка','удобство','цвет',
+    'швы','примерка','ассортимент','наличие'
+  ];
+  const presentDomain = [];
+  for (const w of domain) if (t.includes(w)) presentDomain.push(w);
+
+  // 3) Частотные слова длиной 5+, исключая стоп-слова
+  const stop = new Set([
+    'которые','который','которое','которые','только','просто','можно','нужно','сильно','очень',
+    'сегодня','вчера','буду','если','потому','кстати','будто','давайте','вообще','конечно',
+    'брюки','платье','джинсы','вещь','вещи', // общие слова, часто неинформативны
+  ]);
+  const tokens = t
+    .replace(/[^\p{L}\s]+/gu, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 5 && !stop.has(w));
+
+  const freq = new Map();
+  for (const w of tokens) freq.set(w, (freq.get(w) || 0) + 1);
+  const top = [...freq.entries()].sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => x[0]);
+
+  // 4) Смешиваем доменные и частотные, убираем повторы, берём топ-3
+  const seen = new Set();
+  const tags = [];
+  for (const w of [...presentDomain, ...top]) {
+    if (!seen.has(w)) { tags.push(w); seen.add(w); }
+    if (tags.length >= 3) break;
+  }
+
+  return { tags, summary };
+}
 
 /** -------------------- ROUTES (порядок важен) -------------------- */
 
@@ -176,8 +220,8 @@ router.post("/", uploadAudio, async (req, res) => {
     console.log("✅ Загружено. storagePath:", uploaded.storagePath);
     console.log("🔐 Signed URL для AssemblyAI:", uploaded.signedUrl);
 
-    // 2️⃣ Транскрибация (AAI иногда отдаёт объект)
-    console.log("📝 Отправляем в AssemblyAI на транскрипцию+анализ...");
+    // 2️⃣ Транскрибация
+    console.log("📝 Отправляем в AssemblyAI на транскрипцию...");
     const raw = await transcribeAudio(uploaded.signedUrl);
     const transcript =
       typeof raw === "string" ? raw : (raw && typeof raw.text === "string" ? raw.text : "");
@@ -190,21 +234,19 @@ router.post("/", uploadAudio, async (req, res) => {
       return res.status(400).json({ error: "Аудио не содержит речи или не распознано" });
     }
 
-    // 3️⃣ Анализ (пока mock)
+    // 3️⃣ Анализ: HF → сентимент; локально → теги и summary
     let analysisBase;
     try {
-    analysisBase = await hfAnalyzeSentiment(transcript);
+      analysisBase = await hfAnalyzeSentiment(transcript);
     } catch (e) {
-    console.warn("⚠️ HF sentiment failed, fallback to mock:", e.message);
-    analysisBase = { sentiment: 'нейтральный', emotion_score: 0.5 };
+      console.warn("⚠️ HF sentiment failed, fallback to neutral:", e.message);
+      analysisBase = { sentiment: 'нейтральный', emotion_score: 0.5 };
     }
 
-    // Теги/summary оставим как есть из mock, чтобы MVP давал короткие инсайты:
-    const mockExtras = mockClaude(transcript); // вернёт summary/tags
-    const analysis = { ...analysisBase, tags: mockExtras.tags, summary: mockExtras.summary };
+    const { tags, summary } = extractTagsAndSummary(transcript);
+    const analysis = { ...analysisBase, tags, summary };
 
     console.log("📊 Анализ (HF):", analysis);
-
     console.log("📊 Анализ:", analysis);
 
     // 4️⃣ Сохраняем в БД
