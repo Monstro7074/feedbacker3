@@ -1,54 +1,55 @@
 // apps/backend/lib/sentiment-hf.js
-// Надежный вызов Hugging Face Inference API с рабочими fallback-моделями и нормализацией меток.
+// Стабильный вызов Hugging Face Inference API с приоритетом рабочей модели,
+// кэшированием удачной, нормализацией меток и быстрой деградацией.
 
 const API_BASE = 'https://api-inference.huggingface.co/models/';
+let lastGoodModel = null; // кэшируем удачную модель в памяти
 
-function getModelList() {
-  const envModel = (process.env.HF_MODEL_ID || '').trim();
-  const list = [];
-  if (envModel) list.push(envModel);
-
-  // Живые публичные модели (по приоритету):
-  list.push('cointegrated/rubert-tiny2-russian-sentiment');   // RU sentiment
-  list.push('cardiffnlp/twitter-xlm-roberta-base-sentiment'); // multilingual (Negative/Neutral/Positive)
-  list.push('nlptown/bert-base-multilingual-uncased-sentiment'); // multilingual (1-5 stars)
-
-  return Array.from(new Set(list.filter(Boolean)));
+function parseEnvList(name) {
+  const v = (process.env[name] || '').trim();
+  if (!v) return [];
+  return v.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-// Унификация разных схем меток в RU: положительный / нейтральный / негатив
-function normalizeLabel(raw) {
-  const l = String(raw || '').toLowerCase().trim();
+function getModelList() {
+  // Позволяем задавать явный список через ENV (в приоритете)
+  const explicit = parseEnvList('HF_MODEL_IDS');
+  if (explicit.length) return explicit;
 
-  // cardiffnlp: "positive"/"neutral"/"negative"
-  if (/(^|\W)pos(itive)?(\W|$)/.test(l)) return 'положительный';
-  if (/(^|\W)neu(tral)?(\W|$)/.test(l))  return 'нейтральный';
-  if (/(^|\W)neg(ative)?(\W|$)/.test(l)) return 'негатив';
+  // Ранее ты пробовал модели, что дают 404. Уберём их из дефолта.
+  // Приоритет — стабильная многоязычная:
+  return [
+    'cardiffnlp/twitter-xlm-roberta-base-sentiment',      // multilingual, OK в логах
+    'nlptown/bert-base-multilingual-uncased-sentiment'    // 1..5 stars → маппим в 3 класса
+  ];
+}
+
+// Приводим разные схемы меток к RU: положительный / нейтральный / негатив
+function normalizeLabel(raw) {
+  const l = String(raw || '').toLowerCase();
+
+  if (/(^|\W)pos(itive)?(\W|$)/.test(l) || l.includes('полож')) return 'положительный';
+  if (/(^|\W)neu(tral)?(\W|$)/.test(l) || l.includes('нейтр'))  return 'нейтральный';
+  if (/(^|\W)neg(ative)?(\W|$)/.test(l) || l.includes('нег'))   return 'негатив';
 
   // nlptown: "1 star"..."5 stars"
   const m = l.match(/([1-5])\s*star/);
   if (m) {
-    const stars = Number(m[1]);
-    if (stars <= 2) return 'негатив';
-    if (stars === 3) return 'нейтральный';
+    const s = +m[1];
+    if (s <= 2) return 'негатив';
+    if (s === 3) return 'нейтральный';
     return 'положительный';
   }
 
-  // некоторые RU модели отдают "neutral", "positive", "negative" или на русском
-  if (l.includes('полож')) return 'положительный';
-  if (l.includes('нег'))   return 'негатив';
-  if (l.includes('нейтр')) return 'нейтральный';
-
-  // запасной вариант
   return 'нейтральный';
 }
 
-// Сведение к 0..1 (не критично для тебя, но оставим для графиков/порогов)
+// Сводим к 0..1 (на графики и для совместимости с телегой)
 function toEmotionScore(label, score) {
   const conf = typeof score === 'number' ? Math.min(1, Math.max(0, score)) : 0.8;
-  if (label.startsWith('полож')) return +(0.5 + 0.5 * conf).toFixed(2); // 0.5..1.0
-  if (label.startsWith('нег'))   return +(0.5 - 0.5 * conf).toFixed(2); // 0.0..0.5
-  return 0.50; // нейтральный
+  if (label.startsWith('полож')) return +(0.5 + 0.5 * conf).toFixed(2);
+  if (label.startsWith('нег'))   return +(0.5 - 0.5 * conf).toFixed(2);
+  return 0.50;
 }
 
 async function callModel(model, text, timeoutMs) {
@@ -83,7 +84,6 @@ async function callModel(model, text, timeoutMs) {
     }
 
     const data = await res.json();
-    // Варианты: [ {label, score} ] или [ [ {label, score}, ... ] ]
     const arr = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
     if (!arr.length) throw new Error('HF empty response');
 
@@ -98,22 +98,30 @@ async function callModel(model, text, timeoutMs) {
 }
 
 export async function hfAnalyzeSentiment(text) {
-  const models = getModelList();
-  const timeout = Number(process.env.HF_TIMEOUT_MS || 12000);
+  const timeout = Number(process.env.HF_TIMEOUT_MS || 6000);
+
+  // Если уже знаем «хорошую» модель — пробуем её первой
+  const baseList = getModelList();
+  const models = lastGoodModel
+    ? [lastGoodModel, ...baseList.filter(m => m !== lastGoodModel)]
+    : baseList;
 
   let lastErr;
   for (const model of models) {
     try {
       const { label, emotion_score } = await callModel(model, text, timeout);
+      lastGoodModel = model; // кэшируем удачную
       console.log(`✅ HF sentiment ok via model: ${model} -> ${label} (${emotion_score})`);
       return { sentiment: label, emotion_score };
     } catch (e) {
       lastErr = e;
-      if (e?.status === 404 || e?.status === 503) {
-        console.warn(`⚠️ HF model ${model} responded ${e.status}. Trying next…`);
-        continue;
+      // тихо перескакиваем дальше на 404/503/аборт
+      const code = e?.status;
+      if (code) {
+        console.warn(`⚠️ HF model ${model} responded ${code}. Trying next…`);
+      } else {
+        console.warn(`⚠️ HF model ${model} error: ${e.message || e}. Trying next…`);
       }
-      console.warn(`⚠️ HF model ${model} error: ${e.message}. Trying next…`);
     }
   }
   throw lastErr || new Error('HF sentiment failed for all models');
