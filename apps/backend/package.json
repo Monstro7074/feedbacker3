@@ -30,7 +30,8 @@
     "node-telegram-bot-api": "^0.66.0",
     "openai": "^4.27.0",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "music-metadata": "^10.5.0"
     },
     "devDependencies": {
     "eslint": "^9.9.0",
