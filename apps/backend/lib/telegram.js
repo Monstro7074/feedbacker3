@@ -1,170 +1,98 @@
 // apps/backend/lib/telegram.js
+import TelegramBot from 'node-telegram-bot-api';
+import { supabaseAdmin } from './supabase.js';
 
-/**
- * Надёжная отправка Телеграм-алертов с поддержкой нескольких chat_id и безопасным форматированием.
- * Не кидает исключения при частичных фейлах — логирует и возвращает true, если отправлено хотя бы в один чат.
- */
+const TOKEN = process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const BUCKET = process.env.SUPABASE_BUCKET;
 
-const TG_API = 'https://api.telegram.org';
+// желаемые значения
+const FOURTEEN_DAYS = 14 * 24 * 60 * 60;     // 1209600 сек
+const SEVEN_DAYS    = 7  * 24 * 60 * 60;     // 604800 сек
 
-function htmlEscape(s = '') {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+function getBot() {
+  if (!TOKEN || !CHAT_ID) {
+    console.warn('⚠️ TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы — алерты отключены');
+    return null;
+  }
+  return new TelegramBot(TOKEN, { polling: false });
 }
 
-function fmtPercent01(x) {
-  const n = Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.5;
-  return (n * 100).toFixed(0) + '%';
+function pickTitle(sentiment, summary = '') {
+  const s = String(sentiment || '').toLowerCase();
+  if (s.includes('негатив') || s.includes('negative')) return '🚨 Критичный отзыв!';
+  if (s.includes('полож')   || s.includes('positive')) return '💚 Положительный отзыв';
+  return '😐 Нейтральный отзыв';
 }
 
-function sentimentIcon(sentiment) {
-  const s = (sentiment || '').toLowerCase();
-  if (s.startsWith('негатив')) return '🔴';
-  if (s.startsWith('позитив')) return '🟢';
-  return '🟡';
-}
-
-function isCritical(sentiment, score) {
-  const s = (sentiment || '').toLowerCase();
-  const v = Number(score);
-  return s.startsWith('негатив') && Number.isFinite(v) && v <= 0.4;
-}
-
-/**
- * Готовит текст сообщения (HTML)
- */
-function buildMessage(feedback) {
-  const {
-    id,
-    shop_id,
-    device_id,
-    timestamp,
-    sentiment,
-    emotion_score,
-    tags = [],
-    summary = '',
-    transcript = '',
-  } = feedback || {};
-
-  const icon = sentimentIcon(sentiment);
-  const critical = isCritical(sentiment, emotion_score) ? ' — <b>КРИТИЧНО</b>' : '';
-  const scoreStr = fmtPercent01(emotion_score);
-
-  const safeSummary = htmlEscape(summary || '').trim();
-  const safeTranscript = htmlEscape((transcript || '').replace(/\s+/g, ' ').slice(0, 240)).trim();
-  const safeTags = tags && tags.length ? htmlEscape(tags.join(', ')) : '—';
-
-  const base = process.env.PUBLIC_BASE_URL || 'https://feedbacker3.onrender.com';
-  const linkAudio = `${base}/feedback/get-audio/${id}`;
-  const linkFull = `${base}/feedback/full/${id}`;
-
-  const header =
-    `${icon} <b>Новый отзыв</b>${critical}\n` +
-    `Магазин: <b>${htmlEscape(shop_id || '—')}</b> · Устройство: <b>${htmlEscape(device_id || '—')}</b>\n` +
-    `Время: <i>${htmlEscape(timestamp || new Date().toISOString())}</i>\n`;
-
-  const analytics =
-    `Оценка эмоций: <b>${htmlEscape(sentiment || '—')}</b> (${scoreStr})\n` +
-    `Теги: <b>${safeTags}</b>\n` +
-    (safeSummary ? `Кратко: “${safeSummary}”\n` : '');
-
-  const links =
-    `<a href="${linkFull}">Детали</a> · <a href="${linkAudio}">Аудио</a>`;
-
-  const tail = safeTranscript ? `\n<i>${safeTranscript}</i>` : '';
-
-  return `${header}\n${analytics}${links}${tail}`;
-}
-
-/**
- * Отправка одного сообщения
- */
-async function sendToChat({ token, chatId, text, parseMode = 'HTML', timeoutMs = 8000 }) {
-  const url = `${TG_API}/bot${token}/sendMessage`;
-
-  const controller = new AbortController();
-  const to = setTimeout(() => controller.abort(), timeoutMs);
+export async function sendAlert(feedback) {
+  const bot = getBot();
+  if (!bot) return;
 
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: parseMode,
-        disable_web_page_preview: true,
-      }),
-    });
-    clearTimeout(to);
-
-    let data = null;
-    try { data = await resp.json(); } catch { /* ignore */ }
-
-    if (!resp.ok || data?.ok === false) {
-      const errMsg = data?.description || `HTTP ${resp.status}`;
-      console.warn(`⚠️ Telegram sendMessage failed for chat ${chatId}: ${errMsg}`);
-      return false;
+    // Путь к файлу в бакете
+    let audioPath = feedback.audio_path;
+    if (!audioPath && feedback.audio_url) {
+      audioPath = feedback.audio_url.replace(
+        /^https?:\/\/[^/]+\/storage\/v1\/object\/public\/[^/]+\//,
+        ''
+      );
     }
-    return true;
-  } catch (e) {
-    clearTimeout(to);
-    console.warn(`⚠️ Telegram request error for chat ${chatId}: ${e?.message || e}`);
-    return false;
+
+    const base = process.env.FEEDBACK_API_URL || 'https://example.com';
+
+    // По умолчанию используем «вечную» ссылку через редирект-эндпоинт
+    let audioUrl = `${base}/feedback/redirect-audio/${feedback.id}`;
+
+    // Пытаемся дать прямую ссылку на 14 дней (если провайдер разрешит)
+    if (audioPath) {
+      // сначала пробуем 14 дней
+      let res = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(audioPath, FOURTEEN_DAYS);
+      if (res.error) {
+        // часто у Supabase лимит 7 дней — пробуем 7 дней
+        console.warn('⚠️ createSignedUrl(14d) error:', res.error.message);
+        res = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(audioPath, SEVEN_DAYS);
+      }
+      if (!res.error && res.data?.signedUrl) {
+        audioUrl = res.data.signedUrl;
+      } else {
+        // оставляем редирект — он на каждый клик создаст свежий URL
+        console.warn('⚠️ Переходим на redirect-audio ссылку (будет генерить on-demand)');
+      }
+    }
+
+    // короткая расшифровка (до 4 строк)
+    let transcriptText = '';
+    if (feedback.transcript) {
+      const lines = String(feedback.transcript).split('\n');
+      transcriptText =
+        '\n🗣 *Расшифровка:*\n' +
+        (lines.length > 4 ? `${lines.slice(0, 4).join('\n')}…` : lines.join('\n'));
+    }
+
+    const fullTranscriptUrl = `${base}/feedback/full/${feedback.id}`;
+    const title = pickTitle(feedback.sentiment, feedback.summary);
+
+    const msg =
+`${title}
+*Магазин:* ${feedback.shop_id}
+*Устройство:* ${feedback.device_id || 'неизвестно'}
+*Анонимно:* ${feedback.is_anonymous ? 'Да' : 'Нет'}
+*Оценка эмоций:* ${feedback.emotion_score ?? '—'}
+*Теги:* ${feedback.tags?.join(', ') || 'нет'}
+*Краткое содержание:* ${feedback.summary || 'нет'}${transcriptText}
+
+🎧 [Слушать аудио](${audioUrl})`;
+
+    await bot.sendMessage(CHAT_ID, msg, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[{ text: '📄 Полная расшифровка', url: fullTranscriptUrl }]]
+      }
+    });
+
+    console.log('✅ Telegram alert отправлен');
+  } catch (err) {
+    console.error('❌ Ошибка при отправке Telegram alert:', err.message);
   }
 }
-
-/**
- * Публичная функция
- * @param {object} feedback — объект, который вы сохраняете в БД (id, shop_id, sentiment, emotion_score, tags, summary, …)
- * @returns {Promise<boolean>} true — если отправлено хотя бы в один чат
- */
-export async function sendAlert(feedback) {
-  const token = process.env.TELEGRAM_BOT_TOKEN || process.env.TG_BOT_TOKEN;
-  const idsRaw =
-    process.env.TELEGRAM_CHAT_IDS ||
-    process.env.TELEGRAM_CHAT_ID ||
-    process.env.TG_CHAT_IDS ||
-    process.env.TG_CHAT_ID;
-
-  if (!token) {
-    console.warn('⚠️ Telegram: TELEGRAM_BOT_TOKEN не задан — алерт пропущен');
-    return false;
-  }
-  if (!idsRaw) {
-    console.warn('⚠️ Telegram: TELEGRAM_CHAT_IDS/ID не задан — алерт пропущен');
-    return false;
-  }
-
-  const chatIds = String(idsRaw)
-    .split(/[,\s]+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  if (chatIds.length === 0) {
-    console.warn('⚠️ Telegram: не найдено валидных chat_id — алерт пропущен');
-    return false;
-  }
-
-  const text = buildMessage(feedback);
-
-  let success = 0;
-  for (const id of chatIds) {
-    const ok = await sendToChat({ token, chatId: id, text });
-    if (ok) success++;
-  }
-
-  if (success > 0) {
-    console.log(`✅ Telegram alert отправлен (${success}/${chatIds.length})`);
-    return true;
-  } else {
-    // Не бросаем AggregateError — просто фиксируем факт неуспеха
-    console.warn('❌ Telegram alert не удалось отправить ни в один чат');
-    return false;
-  }
-}
-
-export default { sendAlert };
