@@ -265,9 +265,7 @@ router.get("/get-audio/:id", async (req, res) => {
       return res.status(500).json({ error: "Не удалось создать signed URL" });
     }
 
-    const safeUrl = new URL(signedUrl);
-    safeUrl.searchParams.set('token', '***');
-    console.log('🔐 Signed URL (1209600 сек):', safeUrl.toString());
+    console.log('🔐 Signed URL (1209600 сек):', signedUrl);
     return res.json({ signedUrl: s.signedUrl, ttl });
   } catch (err) {
     console.error("❌ Ошибка в GET /feedback/get-audio/:id:", err.message);
