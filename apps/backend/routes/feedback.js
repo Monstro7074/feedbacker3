@@ -16,6 +16,14 @@ import { hfAnalyzeSentiment } from "../lib/sentiment-hf.js";
 
 const router = express.Router();
 
+/** ---------- redact helpers (убираем токены/секреты из логов) ---------- */
+const redactUrl = (url) =>
+  String(url || '')
+    .replace(/([?&]token=)[^&]+/gi, '$1[REDACTED]')
+    .replace(/([?&](api_key|apikey|key)=)[^&]+/gi, '$1[REDACTED]');
+
+const redactObj = (v) => (typeof v === 'string' ? redactUrl(v) : v);
+
 /** ---------- ensure uploads dir exists ---------- */
 const UPLOAD_DIR = "uploads";
 try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch { /* no-op */ }
@@ -269,7 +277,8 @@ router.get("/get-audio/:id", async (req, res) => {
       return res.status(500).json({ error: "Не удалось создать signed URL" });
     }
 
-    console.log(`🔐 Signed URL (${ttl} сек):`, s.signedUrl);
+    // 🔒 маскируем токен в логах
+    console.log(`🔐 Signed URL (${ttl} сек):`, redactUrl(s.signedUrl));
     return res.json({ signedUrl: s.signedUrl, ttl });
   } catch (err) {
     console.error("❌ Ошибка в GET /feedback/get-audio/:id:", err.message);
@@ -324,7 +333,8 @@ router.post("/", spamShield(), uploadAudio, validateAudioDuration(), async (req,
       return res.status(500).json({ error: "Ошибка загрузки в Supabase Storage" });
     }
     console.log("✅ Загружено. storagePath:", uploaded.storagePath);
-    console.log("🔐 Signed URL для AssemblyAI:", uploaded.signedUrl);
+    // 🔒 маскируем токен в логах
+    console.log("🔐 Signed URL для AssemblyAI:", redactUrl(uploaded.signedUrl));
 
     // 2️⃣ Транскрибация
     console.log("📝 Отправляем в AssemblyAI на транскрипцию...");
