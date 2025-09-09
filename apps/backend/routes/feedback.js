@@ -5,6 +5,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
+import { spamShield, validateAudioDuration } from "../middleware/abuse/index.js";
 
 import { transcribeAudio } from "../lib/transcriber.js";
 import { mockClaude } from "../mock/claude.js";
@@ -295,7 +296,7 @@ router.get("/redirect-audio/:id", async (req, res) => {
 });
 
 // 📥 POST /feedback
-router.post("/", uploadAudio, async (req, res) => {
+router.post("/", spamShield(), uploadAudio, validateAudioDuration(), async (req, res) => {
   console.log("📌 [POST /feedback] Получен запрос");
   console.log("📦 req.body:", req.body);
   console.log("📦 req.file:", req.file);
