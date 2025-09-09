@@ -7,8 +7,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 
 import { transcribeAudio } from "../lib/transcriber.js";
-// mockClaude оставляем на будущее, но не используем для тегов/резюме
-import { mockClaude } from "../mock/claude.js";
+import { mockClaude } from "../mock/claude.js"; // не трогаем импорты
 import { supabase } from "../lib/supabase.js";
 import { sendAlert } from "../lib/telegram.js";
 import { uploadAudioToSupabase } from "../lib/storage.js";
@@ -60,13 +59,12 @@ const uploadAudio = (req, res, next) => {
   });
 };
 
-/* ---------------------- helpers: теги/саммари/красные флаги/эвристика ---------------------- */
+/* ---------------------- helpers: теги/саммари/красные флаги ---------------------- */
 
-// безопасное уникальное объединение
 function uniq(arr) {
   const out = [];
   const seen = new Set();
-  for (const x of arr || []) {
+  for (const x of arr) {
     const k = String(x || '').toLowerCase();
     if (!k || seen.has(k)) continue;
     seen.add(k);
@@ -75,57 +73,57 @@ function uniq(arr) {
   return out;
 }
 
-// «Юникодные границы слова»: вместо \b
-function hasAnyWord(text, terms) {
-  const t = String(text || '');
-  for (const term of terms) {
-    const esc = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // (^|не-буква)(терм)(не-буква|$)
-    const re = new RegExp(`(?:^|[^\\p{L}])(${esc})(?=$|[^\\p{L}])`, 'iu');
-    if (re.test(t)) return true;
-  }
-  return false;
+function splitSentences(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?…])\s+/u)
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 
-// краткая выжимка (1–2 предложения, ≤ 200 символов)
-function buildSummary(text) {
-  const original = String(text || '').replace(/\s+/g, ' ').trim();
-  const parts = original.split(/[.!?…]+/).map(s => s.trim()).filter(Boolean);
-  const s = (parts.slice(0, 2).join('. ') || original).slice(0, 200);
-  return s;
+function cleanBoilerplate(s) {
+  // режем служебные фразы из начала
+  return s
+    .replace(/^(проверка|проверочка|тест|тестируем( отзыв(.*))?|примерочн\w*)[.:,\s-]*/iu, '')
+    .trim();
 }
 
 function extractTagsAndSummary(text) {
-  const t = String(text || '').toLowerCase();
-  const summary = buildSummary(text);
+  const original = String(text || '').trim();
+  const t = original.toLowerCase();
 
-  // 1) канонические теги по домену + синонимы
-  const rules = [
-    { terms: ['сидит', 'сидят', 'посадка', 'садится', 'посадку', 'посадке'], tag: 'посадка' },
-    { terms: ['размер', 'маломер', 'большемер'], tag: 'размер' },
-    { terms: ['качество', 'брак', 'шов', 'швы', 'нитки', 'рвется', 'порвался', 'распоролось'], tag: 'качество' },
-    { terms: ['цена', 'стоимость', 'дорого', 'дешево'], tag: 'цена' },
-    { terms: ['доставка', 'курьер', 'срок', 'опоздал', 'опоздание'], tag: 'доставка' },
-    { terms: ['персонал', 'сотрудник', 'продавец', 'консультант', 'грубо', 'хамство'], tag: 'персонал' },
-    { terms: ['возврат', 'обмен'], tag: 'возврат/обмен' },
-    { terms: ['материал', 'ткань', 'состав'], tag: 'материал' },
-    { terms: ['цвет'], tag: 'цвет' },
-    { terms: ['ассортимент', 'наличие'], tag: 'ассортимент' },
-    { terms: ['удобно', 'удобный', 'комфорт'], tag: 'удобство' },
+  // 1) канонические теги + синонимы/биграммы
+  const canonicalRules = [
+    { re: /\b(сидит|сидят|посадк\w*|садитс\w*|садится)\b/giu, tag: 'посадка' },
+    { re: /\b(размер\w*|маломер\w*|большемер\w*|мал\w*\b|велик\w*\b)\b/giu, tag: 'размер' },
+    { re: /\b(качест\w*|брак\w*|шв\w*|нитк\w*|распорол\w*|рв\w*|не\s*очень)\b/giu, tag: 'качество' },
+    { re: /\b(цен\w*|стоимост\w*|дорог\w*|дешев\w*)\b/giu, tag: 'цена' },
+    { re: /\b(доставк\w*|курьер\w*|срок\w*|опоздал\w*)\b/giu, tag: 'доставка' },
+    { re: /\b(персонал\w*|сотрудник\w*|продавц\w*|консультант\w*|груб\w*|хам\w*)\b/giu, tag: 'персонал' },
+    { re: /\b(возврат\w*|обмен\w*)\b/giu, tag: 'возврат/обмен' },
+    { re: /\b(материал\w*|ткан\w*|состав\w*)\b/giu, tag: 'материал' },
+    { re: /\b(цвет\w*)\b/giu, tag: 'цвет' },
+    { re: /\b(ассортимент\w*|наличи\w*)\b/giu, tag: 'ассортимент' },
+    { re: /\b(удобн\w*|комфорт\w*)\b/giu, tag: 'удобство' },
   ];
 
   const canonical = [];
-  for (const r of rules) {
-    if (hasAnyWord(t, r.terms)) canonical.push(r.tag);
+  for (const rule of canonicalRules) if (rule.re.test(t)) canonical.push(rule.tag);
+
+  // эвристика: «слишком … сидит/сидят» → проблемы с размером/посадкой
+  if (/(слишком).{0,12}(сидит|сидят)/iu.test(t)) {
+    if (!canonical.includes('размер')) canonical.push('размер');
+    if (!canonical.includes('посадка')) canonical.push('посадка');
   }
 
-  // 2) частоты (фоллбек)
+  // 2) частоты как фоллбек (с расширенным стоп-листом)
   const stop = new Set([
     'которые','который','которое','только','просто','можно','нужно','сильно','очень','сегодня','вчера',
     'буду','если','потому','вообще','конечно','давайте','бывает','были','будет','это','всё','все',
     'реально','правда','прям','ещё','там','здесь','вот','сами','само','сама','сам',
-    'сидят','сидит','хорошо','плохо','совсем','слишком','такое','такой','так','же','как',
+    'сидят','сидит','хорошо','плохо','неочень','совсем','слишком','такое','такой','так','же','как',
     'брюки','платье','джинсы','вещь','вещи','магазин','магазине','товар','покупка','клиент','покупатель',
+    'проверка','тестируем','примерочный'
   ]);
 
   const tokens = t
@@ -141,15 +139,18 @@ function extractTagsAndSummary(text) {
     .slice(0, 5)
     .map(x => x[0]);
 
-  let tags = uniq([...canonical, ...top]).slice(0, 3);
+  const tags = uniq([...canonical, ...top]).slice(0, 3);
 
-  // 3) гарантия непустых тегов: умные подстановки
-  if (!tags.length) {
-    if (hasAnyWord(t, ['сидит','сидят','посадка','садится'])) tags.push('посадка');
-    if (hasAnyWord(t, ['размер','маломер','большемер'])) tags.push('размер');
-    if (hasAnyWord(t, ['качество','брак','шов','швы','нитки'])) tags.push('качество');
-  }
-  tags = uniq(tags).slice(0, 3);
+  // 3) summary: берём «наиболее смысловое» предложение
+  const sentences = splitSentences(original);
+  let chosen = sentences.find(s => /(не\s+очень|плохо|брак|возврат|не\s*работа|груб\w*)/iu.test(s))
+            || sentences[0]
+            || original;
+  chosen = cleanBoilerplate(chosen);
+  const second = sentences[1] ? cleanBoilerplate(sentences[1]) : '';
+  let summary = (chosen + (second ? '. ' + second : '')).trim();
+  if (!summary) summary = cleanBoilerplate(original);
+  summary = summary.slice(0, 200);
 
   return { tags, summary };
 }
@@ -157,53 +158,35 @@ function extractTagsAndSummary(text) {
 function detectRedFlags(text) {
   const t = String(text || '').toLowerCase();
   const patterns = [
-    /не\s+очень/iu,
-    /плохо\s+сидит/iu,
-    /ужасн\w*/iu,
-    /кошмар\w*/iu,
-    /брак\w*/iu,
-    /возврат\w*/iu,
-    /обмен\w*/iu,
-    /не\s*работа\w*/iu,
-    /сломал\w*/iu,
-    /грязн\w*/iu,
-    /воня\w*|запах/iu,
-    /обман\w*/iu,
-    /груб\w*|хам\w*/iu,
-    /очень\s+дорог/iu,
-    /очень\s+долго/iu,
-    /разочарован\w*/iu,
+    /не\s+очень/giu,
+    /плохо\s+сидит/giu,
+    /совсем\s+плохо/giu,
+    /ужасн\w*/giu,
+    /кошмар\w*/giu,
+    /брак\w*/giu,
+    /возврат\w*/giu,
+    /обмен\w*/giu,
+    /не\s*работа\w*/giu,
+    /сломал\w*/giu,
+    /грязн\w*/giu,
+    /воня\w*|запах/giu,
+    /обман\w*/giu,
+    /груб\w*|хам\w*/giu,
+    /очень\s+дорог/giu,
+    /очень\s+долго/giu,
+    /разочарован\w*/giu,
   ];
 
   let hits = 0;
   for (const r of patterns) if (r.test(t)) hits++;
 
   const addTags = [];
-  if (/(возврат\w*|обмен\w*)/iu.test(t)) addTags.push('возврат/обмен');
-  if (/(брак\w*|качест\w*)/iu.test(t)) addTags.push('качество');
-  if (/(не\s*работа\w*|сломал\w*)/iu.test(t)) addTags.push('качество');
-  if (/(груб\w*|хам\w*)/iu.test(t)) addTags.push('персонал');
+  if (/(возврат\w*|обмен\w*)/i.test(t)) addTags.push('возврат/обмен');
+  if (/(брак\w*|качест\w*)/i.test(t)) addTags.push('качество');
+  if (/(не\s*работа\w*|сломал\w*)/i.test(t)) addTags.push('качество');
 
-  const isCritical = hits >= 1;
+  const isCritical = hits >= 1; // один сильный триггер — уже «критично»
   return { isCritical, addTags: uniq(addTags) };
-}
-
-// простая эвристика сентимента для RU (без HF)
-function heuristicSentimentRU(text) {
-  const t = String(text || '').toLowerCase();
-
-  const pos = ['отлично','супер','нравится','класс','хорошо','удобно','спасибо','люблю','рекомендую','понравилось','идеально','быстро'];
-  const neg = ['плохо','ужасно','ненавижу','не нравится','дорого','долго','грубо','проблема','не работает','ужас','кошмар','разочарован','возврат','брак','грязно','воняет','запах','не очень','плохо сидит'];
-
-  let p = 0, n = 0;
-  for (const w of pos) if (t.includes(w)) p++;
-  for (const w of neg) if (t.includes(w)) n++;
-
-  let score = 0.5;
-  if (p || n) score = Math.min(1, Math.max(0, 0.5 + (p - n) * 0.15));
-  let sentiment = score > 0.6 ? 'позитив' : score < 0.4 ? 'негатив' : 'нейтральный';
-
-  return { sentiment, emotion_score: Number(score.toFixed(2)) };
 }
 
 /** -------------------- ROUTES (порядок важен) -------------------- */
@@ -246,8 +229,7 @@ router.get("/get-audio/:id", async (req, res) => {
     }
 
     const requestedTtl = Number.parseInt(req.query.ttl || process.env.SIGNED_URL_TTL || "1209600", 10);
-    // безопасные рамки: от 60 сек до 14 дней
-    const ttl = Math.min(Math.max(requestedTtl || 60, 60), 1209600);
+    const ttl = Math.min(Math.max(requestedTtl || 60, 60), 1209600); // 60s..14d
 
     const { data: s, error: se } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET)
@@ -266,7 +248,7 @@ router.get("/get-audio/:id", async (req, res) => {
   }
 });
 
-// 🔁 GET /feedback/redirect-audio/:id — всегда работает, т.к. генерит URL на каждый клик
+// 🔁 GET /feedback/redirect-audio/:id
 router.get("/redirect-audio/:id", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -275,21 +257,15 @@ router.get("/redirect-audio/:id", async (req, res) => {
       .eq("id", req.params.id)
       .single();
 
-    if (error || !data) {
-      return res.status(404).send("Not found");
-    }
+    if (error || !data) return res.status(404).send("Not found");
 
-    // короткий TTL, т.к. редирект прямо сейчас
     const { data: s, error: se } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET)
       .createSignedUrl(data.audio_path, 300); // 5 минут
 
-    if (se || !s?.signedUrl) {
-      return res.status(500).send("Failed to sign");
-    }
-
+    if (se || !s?.signedUrl) return res.status(500).send("Failed to sign");
     return res.redirect(302, s.signedUrl);
-  } catch (e) {
+  } catch {
     return res.status(500).send("Internal error");
   }
 });
@@ -305,9 +281,7 @@ router.post("/", uploadAudio, async (req, res) => {
   try {
     const { shop_id, device_id, is_anonymous } = req.body;
 
-    if (!shop_id) {
-      return res.status(400).json({ error: "shop_id обязателен" });
-    }
+    if (!shop_id) return res.status(400).json({ error: "shop_id обязателен" });
     if (!tmpPath) {
       console.error("❌ Файл не загружен");
       return res.status(400).json({ error: "Аудио-файл не загружен" });
@@ -337,22 +311,15 @@ router.post("/", uploadAudio, async (req, res) => {
       return res.status(400).json({ error: "Аудио не содержит речи или не распознано" });
     }
 
-    // 3️⃣ Сентимент: HF (если есть ключ) → иначе локальная эвристика
-    const hasHF = !!process.env.HUGGINGFACE_API_KEY;
+    // 3️⃣ Сентимент (HF) + теги/саммари (эвристика) + эскалация на «красных флагах»
     let analysisBase;
-    if (hasHF) {
-      try {
-        analysisBase = await hfAnalyzeSentiment(transcript); // { sentiment: 'позитив|нейтральный|негатив', emotion_score: 0..1 }
-      } catch (e) {
-        console.warn("⚠️ HF sentiment failed, fallback to heuristic:", e.message);
-        analysisBase = heuristicSentimentRU(transcript);
-      }
-    } else {
-      console.warn("ℹ️ HF disabled (no HUGGINGFACE_API_KEY). Using heuristic sentiment.");
-      analysisBase = heuristicSentimentRU(transcript);
+    try {
+      analysisBase = await hfAnalyzeSentiment(transcript); // { sentiment: 'позитив|нейтральный|негатив', emotion_score: 0..1 }
+    } catch (e) {
+      console.warn("⚠️ HF sentiment failed, fallback to neutral:", e.message);
+      analysisBase = { sentiment: 'нейтральный', emotion_score: 0.5 };
     }
 
-    // 4️⃣ Теги/саммари + эскалация критичных кейсов
     const { tags: tags0, summary } = extractTagsAndSummary(transcript);
     const flags = detectRedFlags(transcript);
 
@@ -361,24 +328,21 @@ router.post("/", uploadAudio, async (req, res) => {
 
     if (flags.isCritical) {
       sentiment = 'негатив';
-      emotion_score = Math.min(isFinite(emotion_score) ? emotion_score : 1, 0.35);
+      emotion_score = Math.min(emotion_score, 0.35);
     }
 
-    // итоговые теги: канонические + дополнения от флагов, максимум 3
-    let tags = uniq([...tags0, ...flags.addTags]).slice(0, 3);
-    // если вдруг пусто — жёсткий фоллбек
-    if (!tags.length) {
-      if (/размер/iu.test(transcript)) tags.push('размер');
-      if (/сидит|сидят|посадк/iu.test(transcript)) tags.push('посадка');
-      if (/качест|брак/iu.test(transcript)) tags.push('качество');
-      if (!tags.length) tags = ['общее'];
+    // если HF сказал «нейтральный», а у нас есть «посадка» и «размер» вместе — прижмём к лёгкому минусу
+    if (sentiment === 'нейтральный' && tags0.includes('посадка') && tags0.includes('размер')) {
+      sentiment = 'негатив';
+      emotion_score = Math.min(emotion_score, 0.4);
     }
 
+    const tags = uniq([...tags0, ...flags.addTags]).slice(0, 3);
     const analysis = { sentiment, emotion_score, tags, summary };
 
     console.log("📊 Анализ (HF/heuristic + rules):", analysis);
 
-    // 5️⃣ Сохраняем в БД
+    // 4️⃣ Сохраняем в БД
     const feedback = {
       id: uuidv4(),
       shop_id,
@@ -401,8 +365,7 @@ router.post("/", uploadAudio, async (req, res) => {
     }
     console.log("✅ Фидбэк сохранён:", feedback.id);
 
-    // 6️⃣ Telegram Alert — ВСЕГДА отправляем (без порогов/условий)
-    // sendAlert уже использует .tags/.summary/.sentiment из feedback
+    // 5️⃣ Telegram Alert — без условий (как и было)
     console.log("🚨 Отправляем Telegram Alert (без условий)...");
     sendAlert(feedback).catch((e) => console.warn("⚠️ Telegram alert error:", e.message));
 
@@ -411,7 +374,8 @@ router.post("/", uploadAudio, async (req, res) => {
     console.error("❌ Ошибка в POST /feedback:", err);
     return res.status(500).json({ error: "Ошибка при обработке фидбэка" });
   } finally {
-    // 7️⃣ Чистим временный файл всегда
+    // 6️⃣ Чистим временный файл
+    const tmpPath = req.file?.path;
     if (tmpPath && fs.existsSync(tmpPath)) {
       try {
         fs.unlinkSync(tmpPath);
@@ -454,7 +418,6 @@ router.get("/:shop_id", async (req, res) => {
 
 /** ================== DEBUG ROUTES ================== */
 
-// GET /feedback/debug/list?shop_id=shop_001&limit=20&offset=0
 router.get("/debug/list", async (req, res) => {
   try {
     const { shop_id, limit = 20, offset = 0 } = req.query;
@@ -480,7 +443,6 @@ router.get("/debug/list", async (req, res) => {
   }
 });
 
-// GET /feedback/debug/audit/:id
 router.get("/debug/audit/:id", async (req, res) => {
   try {
     const { id } = req.params;
