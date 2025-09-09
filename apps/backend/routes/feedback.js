@@ -6,9 +6,6 @@ import path from "path";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 
-// ⚠️ Новое: для проверки длительности аудио
-import * as mm from "music-metadata";
-
 import { transcribeAudio } from "../lib/transcriber.js";
 import { mockClaude } from "../mock/claude.js";
 import { supabase } from "../lib/supabase.js";
@@ -21,17 +18,6 @@ const router = express.Router();
 /** ---------- ensure uploads dir exists ---------- */
 const UPLOAD_DIR = "uploads";
 try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch { /* no-op */ }
-
-/** ---------- Анти-спам: конфиг ---------- */
-// лимиты можно задать через env, иначе берём дефолты
-const RL_DEVICE_WINDOW_SEC = Number(process.env.RL_DEVICE_WINDOW_SEC || 300);  // окно для device (5 мин)
-const RL_DEVICE_MAX = Number(process.env.RL_DEVICE_MAX || 8);                  // макс отправок за окно
-const RL_IP_WINDOW_SEC = Number(process.env.RL_IP_WINDOW_SEC || 300);          // окно для IP (5 мин)
-const RL_IP_MAX = Number(process.env.RL_IP_MAX || 20);                         // макс отправок за окно
-
-// длительность аудио
-const MIN_AUDIO_SEC = Number(process.env.MIN_AUDIO_SEC || 1.5);                // отсечь короче 1.5 сек
-const MAX_AUDIO_MIN = Number(process.env.MAX_AUDIO_MIN || 5);                  // отсечь длиннее 5 мин
 
 /** ---------- Multer: storage + limits + fileFilter ---------- */
 const storage = multer.diskStorage({
@@ -134,6 +120,7 @@ function extractTagsAndSummary(text) {
   const original = String(text || '').trim();
   const t = original.toLowerCase();
 
+  // ✅ фикc: убран \b вокруг фразы с пробелом (не очень)
   const canonicalRules = [
     { re: /\b(сидит|сидят|посадк\w*|садитс\w*|садится)\b/giu, tag: 'посадка' },
     { re: /\b(размер\w*|маломер\w*|большемер\w*|мал\w*\b|велик\w*\b)\b/giu, tag: 'размер' },
@@ -177,6 +164,7 @@ function extractTagsAndSummary(text) {
   if (top.length === 0) top = [...freq.entries()].filter(([, c]) => c >= 1);
   top = top.sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => x[0]);
 
+  // порядок важен: сначала канон, потом частоты
   let tags = uniq([...canonical, ...top]).slice(0, 3);
 
   const sentences = splitSentences(original);
@@ -218,86 +206,11 @@ function detectRedFlags(text) {
 
   const addTags = [];
   if (/(возврат\w*|обмен\w*)/i.test(t)) addTags.push('возврат/обмен');
-  if (/(брак\w*|качест\w*|не\s+очень|не\s*работа\w*|сломал\w*)/i.test(t)) addTags.push('качество');
+  if (/(брак\w*|качест\w*|не\s+очень|не\s*работа\w*|сломал\w*)/i.test(t)) addTags.push('качество'); // ✅ добавили «не очень»
   if (/(сидит|сидят)/i.test(t)) addTags.push('посадка');
 
   const isCritical = hits >= 1;
   return { isCritical, addTags: uniq(addTags) };
-}
-
-/* ----------------------- Анти-спам: рантайм-хранилище ----------------------- */
-
-const rlStore = {
-  ip: new Map(),      // key: ip, value: number[]
-  device: new Map(),  // key: device_id, value: number[]
-};
-
-function nowSec() { return Math.floor(Date.now() / 1000); }
-
-function prune(arr, windowSec) {
-  const minT = nowSec() - windowSec;
-  while (arr.length && arr[0] < minT) arr.shift();
-  return arr;
-}
-
-function getIp(req) {
-  const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return xf || req.ip || req.connection?.remoteAddress || '0.0.0.0';
-}
-
-// ⚠️ Новое: middleware анти-спам (пер-IP/пер-device)
-function rateLimit(req, res, next) {
-  try {
-    // читаем device_id уже после multer (он распарсил поля формы)
-    const deviceId = String(req.body?.device_id || '').trim() || 'unknown';
-    const ip = getIp(req);
-
-    // per-device
-    const dArr = prune(rlStore.device.get(deviceId) || [], RL_DEVICE_WINDOW_SEC);
-    if (dArr.length >= RL_DEVICE_MAX) {
-      return res.status(429).json({
-        error: `Слишком много загрузок с устройства. Попробуйте позже (окно ${RL_DEVICE_WINDOW_SEC}s).`
-      });
-    }
-
-    // per-ip
-    const ipArr = prune(rlStore.ip.get(ip) || [], RL_IP_WINDOW_SEC);
-    if (ipArr.length >= RL_IP_MAX) {
-      return res.status(429).json({
-        error: `Слишком много запросов с IP. Попробуйте позже (окно ${RL_IP_WINDOW_SEC}s).`
-      });
-    }
-
-    // записываем текущую метку времени
-    const t = nowSec();
-    dArr.push(t); rlStore.device.set(deviceId, dArr);
-    ipArr.push(t); rlStore.ip.set(ip, ipArr);
-
-    return next();
-  } catch (e) {
-    console.warn('⚠️ rateLimit middleware error:', e.message);
-    return next(); // не блокируем при ошибке
-  }
-}
-
-/* --------------------- Валидация длительности аудио --------------------- */
-
-async function validateAudioDurationOrFail(filePath) {
-  // music-metadata умеет читать основные контейнеры (mp3/wav/ogg/mp4/m4a/webm)
-  const meta = await mm.parseFile(filePath).catch(() => null);
-  const durationSec = Number(meta?.format?.duration || 0);
-  if (!durationSec || isNaN(durationSec)) {
-    // если не удалось прочитать длительность — не блокируем, но логируем
-    console.warn('⚠️ Не удалось прочитать длительность аудио — пропускаю проверку');
-    return { ok: true, durationSec: null };
-  }
-  if (durationSec < MIN_AUDIO_SEC) {
-    return { ok: false, reason: `Аудио слишком короткое (< ${MIN_AUDIO_SEC} сек)`, durationSec };
-  }
-  if (durationSec > MAX_AUDIO_MIN * 60) {
-    return { ok: false, reason: `Аудио слишком длинное (> ${MAX_AUDIO_MIN} мин)`, durationSec };
-  }
-  return { ok: true, durationSec };
 }
 
 /** -------------------- ROUTES (порядок важен) -------------------- */
@@ -382,8 +295,7 @@ router.get("/redirect-audio/:id", async (req, res) => {
 });
 
 // 📥 POST /feedback
-// ⛔️ порядок: сначала multer (как и было), затем анти-спам
-router.post("/", uploadAudio, rateLimit, async (req, res) => {
+router.post("/", uploadAudio, async (req, res) => {
   console.log("📌 [POST /feedback] Получен запрос");
   console.log("📦 req.body:", req.body);
   console.log("📦 req.file:", req.file);
@@ -397,21 +309,6 @@ router.post("/", uploadAudio, rateLimit, async (req, res) => {
     if (!tmpPath) {
       console.error("❌ Файл не загружен");
       return res.status(400).json({ error: "Аудио-файл не загружен" });
-    }
-
-    // ✅ Новое: проверяем длительность
-    try {
-      const v = await validateAudioDurationOrFail(tmpPath);
-      if (!v.ok) {
-        console.warn("⚠️ audio duration rejected:", v);
-        return res.status(400).json({ error: v.reason });
-      }
-      if (v.durationSec != null) {
-        console.log(`⏱ Длительность аудио: ${v.durationSec.toFixed(2)} сек`);
-      }
-    } catch (e) {
-      console.warn("⚠️ Ошибка проверки длительности:", e.message);
-      // не блокируем, если парсер упал (fail-open)
     }
 
     // 1️⃣ Загрузка в Supabase Storage
