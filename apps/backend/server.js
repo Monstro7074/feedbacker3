@@ -7,7 +7,7 @@ import fs from 'fs';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import feedbackRoutes from './routes/feedback.js';
-import { requestIdMiddleware } from './middleware/requestId.js';
+import requestId from './middleware/requestId.js'; // ⬅️ фикс: default import
 import { logger } from './utils/logger.js';
 import onFinished from 'on-finished';
 
@@ -66,7 +66,7 @@ const corsOptions = {
  */
 app.use(cors(corsOptions));
 
-app.use(requestIdMiddleware);
+app.use(requestId()); // ⬅️ фикс: вызываем фабрику
 
 app.use((req, res, next) => {
   const start = Date.now();
