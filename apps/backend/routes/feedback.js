@@ -253,19 +253,23 @@ router.get("/get-audio/:id", async (req, res) => {
       return res.status(404).json({ error: "Фидбэк не найден" });
     }
 
-    const requestedTtl = Number.parseInt(req.query.ttl || process.env.SIGNED_URL_TTL || "1209600", 10);
-    const ttl = Math.min(Math.max(requestedTtl || 60, 60), 1209600); // 60s..14d
+    const requestedTtl = Number.parseInt(
+      req.query.ttl || process.env.SIGNED_URL_TTL || "1209600",
+      10
+    );
+    // безопасные рамки: 60 сек ... 14 дней
+    const ttl = Math.min(Math.max(requestedTtl || 60, 60), 1209600);
 
     const { data: s, error: se } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET)
       .createSignedUrl(data.audio_path, ttl);
 
-    if (se) {
-      console.error("❌ Ошибка создания signed URL:", se.message);
+    if (se || !s?.signedUrl) {
+      console.error("❌ Ошибка создания signed URL:", se?.message || "no signedUrl");
       return res.status(500).json({ error: "Не удалось создать signed URL" });
     }
 
-    console.log('🔐 Signed URL (1209600 сек):', signedUrl);
+    console.log(`🔐 Signed URL (${ttl} сек):`, s.signedUrl);
     return res.json({ signedUrl: s.signedUrl, ttl });
   } catch (err) {
     console.error("❌ Ошибка в GET /feedback/get-audio/:id:", err.message);
