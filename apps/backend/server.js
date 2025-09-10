@@ -5,6 +5,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import cors from 'cors';
+import adminRoutes from './routes/admin.js';
 import swaggerUi from 'swagger-ui-express';
 import feedbackRoutes from './routes/feedback.js';
 import requestId from './middleware/requestId.js'; // ⬅️ фикс: default import
@@ -60,6 +61,11 @@ const corsOptions = {
   credentials: true,
   maxAge: 600
 };
+
+/**
+ * Подключение роутера админки
+ */
+app.use('/admin', adminRoutes);
 
 /**
  * Подключаем middleware и access-лог импорты + app.use после gzip/CORS/ratelimit и до роутов
