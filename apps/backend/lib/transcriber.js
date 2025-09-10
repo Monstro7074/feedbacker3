@@ -1,4 +1,5 @@
-// lib/transcriber.js
+// apps/backend/lib/transcriber.js
+import { redactUrl, redactAny } from '../utils/logSafe.js';
 
 /** простая эвристика для ru */
 function heuristicRU(text) {
@@ -54,7 +55,8 @@ export async function transcribeAudio(
     if (!process.env.ASSEMBLYAI_API_KEY) throw new Error('ASSEMBLYAI_API_KEY не задан');
     if (!audioUrl) throw new Error('audioUrl не указан');
 
-    console.log('🎯 URL для AssemblyAI:', audioUrl);
+    // ⛔️ Маскируем возможный token= в URL перед логом
+    console.log('🎯 URL для AssemblyAI:', redactUrl(audioUrl));
 
     // Создаём задание БЕЗ sentiment_analysis / entity_detection — чтобы не ловить варнинг и ошибки
     const payload = {
@@ -95,7 +97,8 @@ export async function transcribeAudio(
       if (js.status === 'error') throw new Error(`Ошибка транскрипции: ${js.error || 'unknown'}`);
     }
   } catch (err) {
-    console.error('❌ Ошибка в transcribeAudio:', err.message || err);
+    // ⛔️ Маскируем любые возможные URL/токены в сообщениях об ошибках
+    console.error('❌ Ошибка в transcribeAudio:', redactAny(err?.message || err));
     return { text: '', analysis: heuristicRU(''), raw: null };
   }
 }
