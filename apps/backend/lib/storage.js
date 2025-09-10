@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { supabaseAdmin } from './supabase.js';
+import { redactUrl } from '../utils/logSafe.js';
 
 const BUCKET = process.env.SUPABASE_BUCKET;
 
@@ -36,3 +37,5 @@ export async function uploadAudioToSupabase(tmpPath) {
 
   return { storagePath, signedUrl: s?.signedUrl || null };
 }
+
+console.log('🔐 Signed URL создан:', redactUrl(signedUrl));
