@@ -1,0 +1,134 @@
+<!-- apps/backend/public/admin/index.html -->
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Feedbacker Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system;max-width:1000px;margin:24px auto;padding:0 12px}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    table{border-collapse:collapse;width:100%;margin-top:12px}
+    td,th{border:1px solid #ddd;padding:8px}
+    tr:nth-child(even){background:#fafafa}
+    .badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#eee;font-size:12px;margin-right:4px}
+    input,select,button{padding:8px;border:1px solid #ccc;border-radius:8px}
+    .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-top:12px}
+    .right{margin-left:auto}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Админка — Feedbacker</h1>
+  <div class="row">
+    <label>Bearer токен: <input id="token" placeholder="ADMIN_TOKEN"/></label>
+    <button id="saveToken">Сохранить</button>
+  </div>
+</header>
+
+<section class="card">
+  <h3>Настройки</h3>
+  <div class="row">
+    <label>TELEGRAM_ALERT_THRESHOLD:
+      <input id="thr" type="number" step="0.01" min="0" max="1" style="width:100px"/>
+    </label>
+    <button id="saveThr">Сохранить</button>
+  </div>
+</section>
+
+<section class="card">
+  <h3>Фильтры</h3>
+  <div class="row">
+    <label>Магазин: <input id="shop" placeholder="shop_001"/></label>
+    <label>Сентимент:
+      <select id="sent">
+        <option value="">(любой)</option>
+        <option>негатив</option>
+        <option>нейтральный</option>
+        <option>позитивный</option>
+      </select>
+    </label>
+    <label>Лимит: <input id="limit" type="number" value="20" min="1" max="100" style="width:80px"/></label>
+    <button id="load">Загрузить</button>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Время</th><th>Магазин</th><th>Устройство</th>
+        <th>Сентимент</th><th>Эмо-скор</th><th>Теги</th><th>Прослушать</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const api = (path, opts={}) => {
+  const token = localStorage.getItem('adm_token') || '';
+  return fetch(path, {
+    ...opts,
+    headers: {
+      ...(opts.headers || {}),
+      ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+    }
+  });
+};
+
+$('#saveToken').onclick = () => {
+  localStorage.setItem('adm_token', $('#token').value.trim());
+  alert('Сохранено');
+};
+
+async function loadSettings() {
+  const r = await api('/admin/api/settings');
+  if (!r.ok) return;
+  const js = await r.json();
+  $('#thr').value = (js.TELEGRAM_ALERT_THRESHOLD?.value ?? 0.4);
+}
+$('#saveThr').onclick = async () => {
+  const v = Number($('#thr').value);
+  if (Number.isNaN(v) || v < 0 || v > 1) return alert('0..1');
+  const r = await api('/admin/api/settings', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ TELEGRAM_ALERT_THRESHOLD: { value: v } })
+  });
+  if (r.ok) alert('Сохранено'); else alert('Ошибка сохранения');
+};
+
+$('#load').onclick = async () => {
+  const params = new URLSearchParams();
+  const shop = $('#shop').value.trim();
+  const sent = $('#sent').value.trim();
+  const limit = $('#limit').value;
+  if (shop) params.set('shop_id', shop);
+  if (sent) params.set('sentiment', sent);
+  params.set('limit', limit);
+
+  const r = await api('/admin/api/feedbacks?' + params.toString());
+  const js = await r.json();
+  const tb = $('#tbl tbody');
+  tb.innerHTML = '';
+  (js.items || []).forEach(it => {
+    const tr = document.createElement('tr');
+    const tags = (it.tags || []).map(t=>`<span class="badge">${t}</span>`).join(' ');
+    const play = `<a target="_blank" href="/feedback/get-audio/${it.id}">▶️</a>`;
+    tr.innerHTML = `
+      <td>${new Date(it.timestamp).toLocaleString()}</td>
+      <td>${it.shop_id || ''}</td>
+      <td>${it.device_id || ''}</td>
+      <td>${it.sentiment}</td>
+      <td>${it.emotion_score ?? ''}</td>
+      <td>${tags}</td>
+      <td>${play}</td>`;
+    tb.appendChild(tr);
+  });
+};
+
+loadSettings();
+</script>
+</body>
+</html>
