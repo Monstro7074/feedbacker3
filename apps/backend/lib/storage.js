@@ -12,13 +12,15 @@ export async function uploadAudioToSupabase(tmpPath) {
 
   const fileBuf = fs.readFileSync(tmpPath);
   const contentType =
-    fileName.endsWith('.wav') ? 'audio/wav'
-    : fileName.endsWith('.ogg') ? 'audio/ogg'
-    : fileName.endsWith('.webm') ? 'audio/webm'
-    : 'audio/mpeg';
+    fileName.endsWith('.wav')  ? 'audio/wav'  :
+    fileName.endsWith('.ogg')  ? 'audio/ogg'  :
+    fileName.endsWith('.webm') ? 'audio/webm' :
+    'audio/mpeg';
 
+  // 1) Upload
   const { error: upErr } = await supabaseAdmin
-    .storage.from(BUCKET)
+    .storage
+    .from(BUCKET)
     .upload(storagePath, fileBuf, { contentType, upsert: false });
 
   if (upErr) {
@@ -26,8 +28,10 @@ export async function uploadAudioToSupabase(tmpPath) {
     return null;
   }
 
+  // 2) Short-lived signed URL (60s) — только для AAI
   const { data: s, error: se } = await supabaseAdmin
-    .storage.from(BUCKET)
+    .storage
+    .from(BUCKET)
     .createSignedUrl(storagePath, 60);
 
   if (se) {
@@ -35,7 +39,8 @@ export async function uploadAudioToSupabase(tmpPath) {
     return { storagePath, signedUrl: null };
   }
 
+  if (s?.signedUrl) {
+    console.log('🔐 Signed URL создан (60s):', redactUrl(s.signedUrl));
+  }
   return { storagePath, signedUrl: s?.signedUrl || null };
 }
-
-console.log('🔐 Signed URL создан:', redactUrl(signedUrl));
