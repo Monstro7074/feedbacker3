@@ -13,16 +13,9 @@ import { supabase } from "../lib/supabase.js";
 import { sendAlert } from "../lib/telegram.js";
 import { uploadAudioToSupabase } from "../lib/storage.js";
 import { hfAnalyzeSentiment } from "../lib/sentiment-hf.js";
+import { redactUrl } from "../utils/logSafe.js"; // 🆕 импорт маскировки
 
 const router = express.Router();
-
-/** ---------- redact helpers (убираем токены/секреты из логов) ---------- */
-const redactUrl = (url) =>
-  String(url || '')
-    .replace(/([?&]token=)[^&]+/gi, '$1[REDACTED]')
-    .replace(/([?&](api_key|apikey|key)=)[^&]+/gi, '$1[REDACTED]');
-
-const redactObj = (v) => (typeof v === 'string' ? redactUrl(v) : v);
 
 /** ---------- ensure uploads dir exists ---------- */
 const UPLOAD_DIR = "uploads";
@@ -262,7 +255,7 @@ router.get("/get-audio/:id", async (req, res) => {
     }
 
     const requestedTtl = Number.parseInt(
-      req.query.ttl || process.env.SIGNED_URL_TTL || "1209600",
+      req.query.ttl || process.env.SIGNED_URL_TTL || "300", // 🆕 дефолт 300s
       10
     );
     // безопасные рамки: 60 сек ... 14 дней
@@ -279,6 +272,9 @@ router.get("/get-audio/:id", async (req, res) => {
 
     // 🔒 маскируем токен в логах
     console.log(`🔐 Signed URL (${ttl} сек):`, redactUrl(s.signedUrl));
+    // 🆕 запретим кеш ответа с токеном
+    res.set('Cache-Control', 'no-store, private, max-age=0');
+    res.set('Pragma', 'no-cache');
     return res.json({ signedUrl: s.signedUrl, ttl });
   } catch (err) {
     console.error("❌ Ошибка в GET /feedback/get-audio/:id:", err.message);
