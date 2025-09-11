@@ -15,6 +15,9 @@ import onFinished from 'on-finished';
 dotenv.config();
 const app = express();
 
+// Cкрываем технологический заголовок Express
+app.disable('x-powered-by');
+
 // Чтобы rateLimit корректно считал IP за прокси (Replit/PAAS)
 app.set('trust proxy', 1);
 
