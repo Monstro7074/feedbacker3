@@ -16,6 +16,8 @@
     input,select,button{padding:8px;border:1px solid #ccc;border-radius:8px}
     .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-top:12px}
     .right{margin-left:auto}
+    .muted{color:#6b7280}
+    audio{width:100%;margin-top:10px}
   </style>
 </head>
 <body>
@@ -24,6 +26,7 @@
   <div class="row">
     <label>Bearer токен: <input id="token" placeholder="ADMIN_TOKEN"/></label>
     <button id="saveToken">Сохранить</button>
+    <button id="logout">Выйти</button>
   </div>
 </header>
 
@@ -34,6 +37,7 @@
       <input id="thr" type="number" step="0.01" min="0" max="1" style="width:100px"/>
     </label>
     <button id="saveThr">Сохранить</button>
+    <span class="muted">0..1 — ниже → чувствительнее алерты</span>
   </div>
 </section>
 
@@ -51,55 +55,74 @@
     </label>
     <label>Лимит: <input id="limit" type="number" value="20" min="1" max="100" style="width:80px"/></label>
     <button id="load">Загрузить</button>
+    <button id="more" disabled>Ещё</button>
   </div>
 
   <table id="tbl">
     <thead>
       <tr>
         <th>Время</th><th>Магазин</th><th>Устройство</th>
-        <th>Сентимент</th><th>Эмо-скор</th><th>Теги</th><th>Прослушать</th>
+        <th>Сентимент</th><th>Эмо-скор</th><th>Теги</th><th>Действия</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
+
+  <audio id="player" controls preload="none"></audio>
 </section>
 
 <script>
 const $ = sel => document.querySelector(sel);
+
+// --- auth header expected by adminAuth() ---
 const api = (path, opts={}) => {
   const token = localStorage.getItem('adm_token') || '';
   return fetch(path, {
     ...opts,
     headers: {
       ...(opts.headers || {}),
-      ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+      ...(token ? { 'X-Admin-Token': token } : {})
     }
   });
 };
 
+// --- token ui ---
+$('#token').value = localStorage.getItem('adm_token') || '';
 $('#saveToken').onclick = () => {
   localStorage.setItem('adm_token', $('#token').value.trim());
-  alert('Сохранено');
+  alert('Токен сохранён');
+};
+$('#logout').onclick = () => {
+  localStorage.removeItem('adm_token');
+  $('#token').value = '';
+  alert('Вы вышли');
 };
 
+// --- settings ---
 async function loadSettings() {
   const r = await api('/admin/api/settings');
-  if (!r.ok) return;
+  if (!r.ok) { alert('Ошибка загрузки настроек'); return; }
   const js = await r.json();
-  $('#thr').value = (js.TELEGRAM_ALERT_THRESHOLD?.value ?? 0.4);
+  $('#thr').value = js.TELEGRAM_ALERT_THRESHOLD ?? 0.4;
 }
 $('#saveThr').onclick = async () => {
   const v = Number($('#thr').value);
-  if (Number.isNaN(v) || v < 0 || v > 1) return alert('0..1');
+  if (!Number.isFinite(v) || v < 0 || v > 1) return alert('0..1');
   const r = await api('/admin/api/settings', {
     method:'PUT',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ TELEGRAM_ALERT_THRESHOLD: { value: v } })
+    // backend принимает и число, и { value }
+    body: JSON.stringify({ TELEGRAM_ALERT_THRESHOLD: v })
   });
-  if (r.ok) alert('Сохранено'); else alert('Ошибка сохранения');
+  alert(r.ok ? 'Сохранено' : 'Ошибка сохранения');
 };
 
-$('#load').onclick = async () => {
+// --- list + pagination ---
+let nextOffset = 0;
+
+async function fetchPage({ reset=false } = {}) {
+  if (reset) nextOffset = 0;
+
   const params = new URLSearchParams();
   const shop = $('#shop').value.trim();
   const sent = $('#sent').value.trim();
@@ -107,15 +130,18 @@ $('#load').onclick = async () => {
   if (shop) params.set('shop_id', shop);
   if (sent) params.set('sentiment', sent);
   params.set('limit', limit);
+  params.set('offset', nextOffset);
 
   const r = await api('/admin/api/feedbacks?' + params.toString());
+  if (!r.ok) { alert('Ошибка загрузки'); return; }
   const js = await r.json();
+
   const tb = $('#tbl tbody');
-  tb.innerHTML = '';
+  if (reset) tb.innerHTML = '';
+
   (js.items || []).forEach(it => {
     const tr = document.createElement('tr');
     const tags = (it.tags || []).map(t=>`<span class="badge">${t}</span>`).join(' ');
-    const play = `<a target="_blank" href="/feedback/get-audio/${it.id}">▶️</a>`;
     tr.innerHTML = `
       <td>${new Date(it.timestamp).toLocaleString()}</td>
       <td>${it.shop_id || ''}</td>
@@ -123,11 +149,31 @@ $('#load').onclick = async () => {
       <td>${it.sentiment}</td>
       <td>${it.emotion_score ?? ''}</td>
       <td>${tags}</td>
-      <td>${play}</td>`;
+      <td>
+        <button class="play" data-id="${it.id}">Прослушать</button>
+        <a target="_blank" href="/feedback/full/${it.id}">Детали</a>
+      </td>`;
     tb.appendChild(tr);
   });
-};
 
+  nextOffset = js.nextOffset ?? null;
+  $('#more').disabled = nextOffset == null;
+}
+
+$('#load').onclick = () => fetchPage({ reset:true });
+$('#more').onclick = () => fetchPage({ reset:false });
+
+// делегирование: кнопка «Прослушать» → безопасный redirect URL
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button.play');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const player = $('#player');
+  player.src = `/feedback/redirect-audio/${id}`;
+  player.play().catch(()=>{});
+});
+
+// init
 loadSettings();
 </script>
 </body>
