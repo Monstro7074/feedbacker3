@@ -14,6 +14,7 @@ import { sendAlert } from "../lib/telegram.js";
 import { uploadAudioToSupabase } from "../lib/storage.js";
 import { hfAnalyzeSentiment } from "../lib/sentiment-hf.js";
 import { redactUrl } from "../utils/logSafe.js"; // 🆕 импорт маскировки
+import { getSettingNumber } from "../lib/settings.js"; // 🆕 импорт порога из настроек
 
 const router = express.Router();
 
@@ -413,9 +414,20 @@ router.post("/", spamShield(), uploadAudio, validateAudioDuration(), async (req,
     }
     console.log("✅ Фидбэк сохранён:", feedback.id);
 
-    // 5️⃣ Telegram Alert — без условий
-    console.log("🚨 Отправляем Telegram Alert (без условий)...");
-    sendAlert(feedback).catch((e) => console.warn("⚠️ Telegram alert error:", e.message));
+    // 5️⃣ Telegram Alert — теперь по порогу из настроек
+    const thresholdDefault = Number.parseFloat(process.env.TELEGRAM_ALERT_THRESHOLD || '0.4');
+    const alertThreshold = await getSettingNumber('TELEGRAM_ALERT_THRESHOLD', thresholdDefault, { ttlMs: 60_000 });
+    const shouldAlert =
+      sentiment === 'негатив' &&
+      (!Number.isFinite(feedback.emotion_score) || feedback.emotion_score <= alertThreshold);
+
+    console.log(`🚨 Порог алерта: ${alertThreshold}. shouldAlert=${shouldAlert}`);
+    if (shouldAlert) {
+      console.log("🚨 Отправляем Telegram Alert (по условиям)...");
+      sendAlert(feedback).catch((e) => console.warn("⚠️ Telegram alert error:", e.message));
+    } else {
+      console.log("ℹ️ Алерт пропущен из-за порога TELEGRAM_ALERT_THRESHOLD");
+    }
 
     return res.json({ status: "ok", feedback_id: feedback.id });
   } catch (err) {
