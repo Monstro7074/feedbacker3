@@ -2,6 +2,7 @@
 <!doctype html>
 <html lang="ru">
 <head>
+  <link rel="stylesheet" href="/admin/admin.css">
   <meta charset="utf-8" />
   <title>Feedbacker Admin</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -56,6 +57,7 @@
     <label>Лимит: <input id="limit" type="number" value="20" min="1" max="100" style="width:80px"/></label>
     <button id="load">Загрузить</button>
     <button id="more" disabled>Ещё</button>
+    <button id="btn-export">Экспорт CSV</button>
   </div>
 
   <table id="tbl">
@@ -176,5 +178,54 @@ document.addEventListener('click', (e) => {
 // init
 loadSettings();
 </script>
+  <!-- Карточка отзыва (модалка) -->
+<div id="modal" class="modal hidden">
+  <div class="modal__dialog">
+    <button id="modal-close" class="modal__close" aria-label="Закрыть">×</button>
+    <h3>Карточка отзыва</h3>
+
+    <div class="grid">
+      <div><b>Время:</b> <span id="c-time"></span></div>
+      <div><b>Магазин:</b> <span id="c-shop"></span></div>
+      <div><b>Устройство:</b> <span id="c-device"></span></div>
+      <div><b>Сентимент:</b> <span id="c-sentiment"></span></div>
+      <div><b>Эмо-скор:</b> <span id="c-score"></span></div>
+      <div><b>Теги (авто):</b> <span id="c-tags"></span></div>
+    </div>
+
+    <div style="margin:8px 0;">
+      <audio id="c-audio" controls style="width:100%"></audio>
+    </div>
+
+    <div><b>Кратко:</b> <div id="c-summary" class="box"></div></div>
+    <div><b>Расшифровка:</b> <div id="c-transcript" class="box transcript"></div></div>
+
+    <div style="margin-top:10px">
+      <b>Быстрые теги:</b>
+      <div id="qtags" class="qtags">
+        <button class="qt" data-tag="качество">качество</button>
+        <button class="qt" data-tag="размер">размер</button>
+        <button class="qt" data-tag="посадка">посадка</button>
+        <button class="qt" data-tag="доставка">доставка</button>
+        <button class="qt" data-tag="персонал">персонал</button>
+        <button class="qt" data-tag="цена">цена</button>
+      </div>
+    </div>
+
+    <div style="margin-top:8px">
+      <b>Заметка менеджера:</b>
+      <textarea id="c-note" rows="3" class="box" placeholder="Короткий комментарий"></textarea>
+    </div>
+
+    <div style="margin-top:10px; display:flex; gap:8px;">
+      <button id="btn-save-anno">Сохранить</button>
+      <a id="c-details-link" target="_blank" rel="noopener">Детальная JSON</a>
+    </div>
+  </div>
+</div>
+
+<!-- Тосты -->
+<div id="toast" class="toast"></div>
+
 </body>
 </html>
