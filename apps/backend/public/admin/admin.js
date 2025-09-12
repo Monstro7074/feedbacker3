@@ -1,212 +1,245 @@
-// apps/backend/public/admin/admin.js
-(() => {
-  const $ = s => document.querySelector(s);
-  const $$ = s => Array.from(document.querySelectorAll(s));
+// apps/backend/public/admin.js
+// ✅ БЕЗ /api — правильная база
+const API_BASE = '/admin';
+const tokenKey = 'ADMIN_TOKEN';
 
-  /* ============ API обёртка с токеном ============ */
-  const API = {
-    get token() {
-      return localStorage.getItem('ADMIN_TOKEN') || '';
-    },
-    set token(v) {
-      if (v) localStorage.setItem('ADMIN_TOKEN', v);
-      else localStorage.removeItem('ADMIN_TOKEN');
-    },
-    async fetch(path, opts = {}) {
-      const headers = Object.assign(
-        {
-          'x-admin-token': API.token,
-          'Content-Type': 'application/json'
-        },
-        opts.headers || {}
-      );
+function adminToken() { return localStorage.getItem(tokenKey) || ''; }
+function setAdminToken(t) { localStorage.setItem(tokenKey, t || ''); }
 
-      const res = await fetch(`/admin${path}`, { ...opts, headers });
+async function apiGet(path, params = {}) {
+  const url = new URL(API_BASE + path, window.location.origin);
+  Object.entries(params).forEach(([k,v]) => (v!=null && v!=='') && url.searchParams.set(k, v));
+  const r = await fetch(url, { headers: { 'X-Admin-Token': adminToken() } });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken() },
+    body: JSON.stringify(body || {})
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
-      if (res.status === 401) {
-        throw new Error('unauthorized');
-      }
-      // экспорт CSV возвращает text/csv
-      const ct = res.headers.get('content-type') || '';
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `HTTP ${res.status}`);
-      }
-      return ct.includes('application/json') ? res.json() : res.text();
-    }
-  };
+/* ---------- toasts ---------- */
+function toast(msg) {
+  const el = document.querySelector('#toast');
+  if (!el) return alert(msg);
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1600);
+}
 
-  /* ============ Тосты ============ */
-  function toast(msg) { window.alert(msg); } // простой вариант
+/* ---------- settings ---------- */
+async function loadSettings() {
+  try {
+    const s = await apiGet('/settings');
+    const v = s.TELEGRAM_ALERT_THRESHOLD ?? '0.4';
+    const el = document.querySelector('#threshold');
+    if (el) el.value = v;
+  } catch (e) {
+    // мягко подсказали про токен
+    console.warn('settings load error:', e);
+    toast('Введите ADMIN_TOKEN и нажмите «Сохранить»');
+  }
+}
+async function saveSettings() {
+  const el = document.querySelector('#threshold');
+  const v = (el?.value || '').trim();
+  await apiPost('/settings', { TELEGRAM_ALERT_THRESHOLD: v });
+  toast('Сохранено');
+}
 
-  /* ============ DOM ============ */
-  const tokenInput   = $('#adminToken');
-  const saveTokenBtn = $('#btnSaveToken');
-  const logoutBtn    = $('#btnLogout');
+/* ---------- list + pagination ---------- */
+let currentOffset = 0;
 
-  const thrInput  = $('#threshold');
-  const thrSave   = $('#btnSaveThreshold');
+async function loadList({ reset = false } = {}) {
+  const shop = document.querySelector('#f-shop')?.value.trim() || '';
+  const sentiment = document.querySelector('#f-sentiment')?.value.trim() || '';
+  const limit = parseInt(document.querySelector('#f-limit')?.value || '20', 10);
 
-  const shopInput = $('#filterShop');
-  const sentSel   = $('#filterSentiment');
-  const limitInp  = $('#filterLimit');
-  const loadBtn   = $('#btnLoad');
-  const moreBtn   = $('#btnMore');
-  const exportBtn = $('#btnExport');
+  if (reset) currentOffset = 0;
 
-  const tbody     = $('#tblBody');
-  const player    = $('#player');
+  const { items, nextOffset } = await apiGet('/list', {
+    shop_id: shop, sentiment, limit, offset: currentOffset
+  });
 
-  let paging = { nextOffset: 0, lastQuery: null };
+  const tbody = document.querySelector('#rows');
+  if (!tbody) return;
+  if (reset) tbody.innerHTML = '';
 
-  /* ============ Рендер строки таблицы ============ */
-  function trHtml(it) {
-    const ts = new Date(it.timestamp).toLocaleString();
-    const tags = (it.tags || []).join(', ');
-    const score = (it.emotion_score ?? '').toString();
-    return `
-      <tr data-id="${it.id}">
-        <td>${ts}</td>
-        <td>${it.shop_id || ''}</td>
-        <td>${it.device_id || ''}</td>
-        <td>${it.sentiment || ''}</td>
-        <td>${score}</td>
-        <td>${tags}</td>
-        <td>
-          <button class="btnPlay" data-id="${it.id}">Прослушать</button>
-          <button class="btnCard" data-id="${it.id}">Карточка</button>
-        </td>
-      </tr>
+  for (const it of items) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${new Date(it.timestamp).toLocaleString()}</td>
+      <td>${it.shop_id || ''}</td>
+      <td>${it.device_id || ''}</td>
+      <td>${it.sentiment || ''}</td>
+      <td>${it.emotion_score ?? ''}</td>
+      <td>${(it.tags || []).join(', ')}</td>
+      <td>
+        <button class="btn-play" data-id="${it.id}">Прослушать</button>
+        <button class="btn-card" data-id="${it.id}">Карточка</button>
+      </td>
     `;
+    tbody.appendChild(tr);
   }
 
-  function bindRowActions() {
-    // плеер
-    $$('.btnPlay').forEach(b => {
-      b.onclick = () => {
-        const id = b.dataset.id;
+  const moreBtn = document.querySelector('#btn-more');
+  if (moreBtn) {
+    if (nextOffset != null) { currentOffset = nextOffset; moreBtn.disabled = false; }
+    else { moreBtn.disabled = true; }
+  }
+}
+
+/* ---------- card modal ---------- */
+let currentCardId = null;
+
+async function openCard(id) {
+  currentCardId = id;
+  const { item, annotation } = await apiGet(`/feedback/${id}`);
+
+  // fill fields
+  document.querySelector('#c-time').textContent = new Date(item.timestamp).toLocaleString();
+  document.querySelector('#c-shop').textContent = item.shop_id || '';
+  document.querySelector('#c-device').textContent = item.device_id || '';
+  document.querySelector('#c-sentiment').textContent = item.sentiment || '';
+  document.querySelector('#c-score').textContent = item.emotion_score ?? '';
+  document.querySelector('#c-tags').textContent = (item.tags || []).join(', ');
+  document.querySelector('#c-summary').textContent = item.summary || '';
+  document.querySelector('#c-transcript').textContent = item.transcript || '';
+
+  // audio via redirect (без токена в JS)
+  const p = document.querySelector('#c-audio');
+  if (p) p.src = `/feedback/redirect-audio/${item.id}`;
+
+  // details link
+  const link = document.querySelector('#c-details-link');
+  if (link) link.href = `/feedback/full/${item.id}`;
+
+  // quick tags
+  const managerTags = new Set((annotation?.tags) || []);
+  document.querySelectorAll('#qtags .qt').forEach(btn => {
+    const tag = btn.dataset.tag;
+    if (managerTags.has(tag)) btn.classList.add('active'); else btn.classList.remove('active');
+  });
+  const note = document.querySelector('#c-note');
+  if (note) note.value = annotation?.note || '';
+
+  showModal(true);
+}
+
+function collectQuickTags() {
+  const tags = [];
+  document.querySelectorAll('#qtags .qt.active').forEach(b => tags.push(b.dataset.tag));
+  return tags;
+}
+
+async function saveAnnotation() {
+  if (!currentCardId) return;
+  const tags = collectQuickTags();
+  const note = document.querySelector('#c-note')?.value || '';
+  await apiPost('/annotate', { feedback_id: currentCardId, tags, note });
+  toast('Аннотация сохранена');
+}
+
+function showModal(v) {
+  const m = document.querySelector('#modal');
+  if (m) m.classList.toggle('hidden', !v);
+}
+
+/* ---------- export CSV ---------- */
+async function exportCsv() {
+  const shop = document.querySelector('#f-shop')?.value.trim() || '';
+  const sentiment = document.querySelector('#f-sentiment')?.value.trim() || '';
+  const limit = parseInt(document.querySelector('#f-limit')?.value || '1000', 10);
+
+  const url = new URL(API_BASE + '/export', window.location.origin);
+  if (shop) url.searchParams.set('shop_id', shop);
+  if (sentiment) url.searchParams.set('sentiment', sentiment);
+  url.searchParams.set('limit', String(limit));
+
+  const r = await fetch(url, { headers: { 'X-Admin-Token': adminToken() } });
+  if (!r.ok) { toast('Ошибка экспорта'); return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `feedback_export_${Date.now()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* ---------- event wiring ---------- */
+document.addEventListener('DOMContentLoaded', () => {
+  // подставим сохранённый токен в инпут, если он есть
+  const tokenInput = document.querySelector('#token');
+  if (tokenInput) tokenInput.value = adminToken();
+
+  // токен
+  document.querySelector('#btn-save-token')?.addEventListener('click', () => {
+    setAdminToken(document.querySelector('#token').value.trim());
+    toast('Токен сохранён');
+    // после сохранения сразу пробуем подгрузить настройки и список
+    loadSettings().then(() => loadList({ reset: true })).catch(()=>{});
+  });
+  document.querySelector('#btn-logout')?.addEventListener('click', () => {
+    setAdminToken('');
+    toast('Вышли');
+  });
+
+  // настройки
+  document.querySelector('#btn-save-settings')?.addEventListener('click', () => {
+    saveSettings().catch(e => toast('Ошибка: ' + e.message));
+  });
+
+  // список
+  document.querySelector('#btn-load')?.addEventListener('click', () => {
+    loadList({ reset: true }).catch(e => toast('Ошибка: ' + e.message));
+  });
+  document.querySelector('#btn-more')?.addEventListener('click', () => {
+    loadList({ reset: false }).catch(e => toast('Ошибка: ' + e.message));
+  });
+
+  // экспорт
+  document.querySelector('#btn-export')?.addEventListener('click', () => {
+    exportCsv().catch(e => toast('Ошибка: ' + e.message));
+  });
+
+  // делегируем действия в таблице
+  document.addEventListener('click', (e) => {
+    const play = e.target.closest('.btn-play');
+    if (play) {
+      const id = play.dataset.id;
+      // отдельный общий плеер на странице
+      const player = document.querySelector('#player') || document.querySelector('#c-audio');
+      if (player) {
         player.src = `/feedback/redirect-audio/${id}`;
-        player.play().catch(() => {});
-      };
-    });
-    // карточка (пока просто показываем JSON)
-    $$('.btnCard').forEach(b => {
-      b.onclick = async () => {
-        try {
-          const id = b.dataset.id;
-          const data = await API.fetch(`/api/feedback/${id}`);
-          window.alert(JSON.stringify(data, null, 2));
-        } catch (e) {
-          toast('Не удалось открыть карточку: ' + e.message);
-        }
-      };
-    });
-  }
-
-  /* ============ Загрузка списка ============ */
-  async function loadList({ append = false } = {}) {
-    const qs = new URLSearchParams();
-    const shop = shopInput.value.trim();
-    const sent = sentSel.value;
-    const limit = parseInt(limitInp.value || '20', 10) || 20;
-
-    qs.set('limit', limit);
-    if (append && paging.nextOffset) qs.set('offset', paging.nextOffset);
-    if (shop) qs.set('shop_id', shop);
-    if (sent && sent !== 'any') qs.set('sentiment', sent);
-
-    const queryStr = qs.toString();
-    paging.lastQuery = queryStr;
-
-    const res = await API.fetch(`/api/feedbacks?${queryStr}`);
-    if (!append) tbody.innerHTML = '';
-    (res.items || []).forEach(it => {
-      tbody.insertAdjacentHTML('beforeend', trHtml(it));
-    });
-    bindRowActions();
-
-    paging.nextOffset = res.nextOffset;
-    moreBtn.disabled = !paging.nextOffset;
-  }
-
-  /* ============ Экспорт CSV ============ */
-  function doExport() {
-    // Для скачивания используем query-параметр ?token= (т.к. в <a download> нельзя передать заголовок)
-    const qs = new URLSearchParams(paging.lastQuery || '');
-    if (API.token) qs.set('token', API.token);
-    const url = `/admin/api/export?${qs.toString()}`;
-    window.open(url, '_blank');
-  }
-
-  /* ============ Настройки ============ */
-  async function pullSettings() {
-    const s = await API.fetch('/api/settings');
-    thrInput.value = s.TELEGRAM_ALERT_THRESHOLD ?? '0.4';
-  }
-  async function pushSettings() {
-    const v = parseFloat(thrInput.value);
-    if (Number.isNaN(v)) return toast('Введите число');
-    await API.fetch('/api/settings', {
-      method: 'PUT',
-      body: JSON.stringify({ TELEGRAM_ALERT_THRESHOLD: String(v) })
-    });
-    toast('Сохранено');
-  }
-
-  /* ============ Инициализация ============ */
-  function initTokenUI() {
-    tokenInput.value = API.token || 'ADMIN_TOKEN';
-    saveTokenBtn.onclick = async () => {
-      API.token = tokenInput.value.trim();
-      try {
-        await pullSettings();
-        await loadList({ append: false });
-        toast('Токен принят');
-      } catch (e) {
-        if (e.message === 'unauthorized') toast('Неверный токен');
-        else toast('Ошибка: ' + e.message);
+        player.play?.().catch(()=>{});
       }
-    };
-    logoutBtn.onclick = () => {
-      API.token = '';
-      tokenInput.value = '';
-      tbody.innerHTML = '';
-      moreBtn.disabled = true;
-      player.removeAttribute('src');
-      toast('Вышли из админки');
-    };
-  }
-
-  async function init() {
-    initTokenUI();
-
-    loadBtn.onclick = () => loadList({ append: false }).catch(e => {
-      if (e.message === 'unauthorized') toast('Введите верный токен и нажмите «Сохранить»');
-      else toast('Ошибка загрузки списка: ' + e.message);
-    });
-    moreBtn.onclick = () => loadList({ append: true }).catch(e => {
-      toast('Ошибка подгрузки: ' + e.message);
-    });
-    exportBtn.onclick = doExport;
-    thrSave.onclick = () => pushSettings().catch(e => {
-      if (e.message === 'unauthorized') toast('Нужен валидный токен');
-      else toast('Ошибка сохранения: ' + e.message);
-    });
-
-    // Если токен уже сохранён — сразу пробуем подтянуть настройки и ленту
-    if (API.token) {
-      try {
-        await pullSettings();
-      } catch (e) {
-        // молча, чтобы не спамить
-      }
-      try {
-        await loadList({ append: false });
-      } catch (e) {
-        // молча
-      }
+      return;
     }
-  }
+    const card = e.target.closest('.btn-card');
+    if (card) {
+      openCard(card.dataset.id).catch(err => toast('Ошибка карточки: ' + err.message));
+      return;
+    }
+    const qt = e.target.closest('#qtags .qt');
+    if (qt) {
+      qt.classList.toggle('active');
+      return;
+    }
+  });
 
-  document.addEventListener('DOMContentLoaded', init);
-})();
+  document.querySelector('#btn-save-anno')?.addEventListener('click', () => {
+    saveAnnotation().catch(e => toast('Ошибка сохранения: ' + e.message));
+  });
+
+  document.querySelector('#modal-close')?.addEventListener('click', () => showModal(false));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') showModal(false); });
+
+  // автоинициализация (попробуем — если нет токена, просто покажем тост)
+  loadSettings().then(() => loadList({ reset: true })).catch(()=>{});
+});
