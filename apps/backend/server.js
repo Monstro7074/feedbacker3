@@ -1,14 +1,14 @@
-// server.js (ES-модуль)
+// apps/backend/server.js (ES-модуль)
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import express from 'express';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import cors from 'cors';
-import adminRoutes from './routes/admin.js';
 import swaggerUi from 'swagger-ui-express';
 import feedbackRoutes from './routes/feedback.js';
-import requestId from './middleware/requestId.js'; // ⬅️ фикс: default import
+import adminRoutes from './routes/admin.js';
+import requestId from './middleware/requestId.js';
 import { logger } from './utils/logger.js';
 import onFinished from 'on-finished';
 
@@ -21,16 +21,10 @@ app.disable('x-powered-by');
 // Чтобы rateLimit корректно считал IP за прокси (Replit/PAAS)
 app.set('trust proxy', 1);
 
-/**
- * ---- GZIP ----
- * Сжимаем ответы (меньше трафика → ниже latency)
- */
+// ---- GZIP ----
 app.use(compression());
 
-/**
- * ---- Rate limit для /feedback ----
- * Режем бурст-листы и защищаем API от случайных «ддосов»
- */
+// ---- Rate limit для /feedback ----
 const listLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 минута
   limit: 120,          // до 120 запросов в минуту на IP
@@ -39,12 +33,7 @@ const listLimiter = rateLimit({
 });
 app.use('/feedback', listLimiter);
 
-/**
- * ---- CORS ----
- * В .env:
- * CORS_ORIGINS=https://web.postman.co,https://<твоя-replit-ссылка>
- * Если пусто — разрешим все Origin (удобно в dev).
- */
+// ---- CORS ----
 const allowed = new Set(
   (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -54,29 +43,20 @@ const allowed = new Set(
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // Запросы без Origin (Postman Desktop/cURL) — пропускаем
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); // Postman/cURL
     if (allowed.size === 0 || allowed.has(origin)) return cb(null, true);
     return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-token'],
   credentials: true,
   maxAge: 600
 };
 
-/**
- * Подключение роутера админки
- */
-app.use('/admin', adminRoutes);
-
-/**
- * Подключаем middleware и access-лог импорты + app.use после gzip/CORS/ratelimit и до роутов
- */
 app.use(cors(corsOptions));
 
-app.use(requestId()); // ⬅️ фикс: вызываем фабрику
-
+// request id + access log
+app.use(requestId());
 app.use((req, res, next) => {
   const start = Date.now();
   logger.info(req.id, '📥 request:start', {
@@ -95,7 +75,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Универсальная обработка preflight без path-to-regexp "*"
+// Универсальная обработка preflight
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     const origin = req.headers.origin;
@@ -104,7 +84,7 @@ app.use((req, res, next) => {
       res.header('Vary', 'Origin');
       res.header('Access-Control-Allow-Credentials', 'true');
       res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-token');
       res.header('Access-Control-Max-Age', '600');
       return res.sendStatus(204);
     }
@@ -112,10 +92,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// на всякий: health
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+// health
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// ⚠️ JSON-парсер — только для JSON (multipart обрабатывает multer в роуте)
+// JSON-парсер — только для JSON (multipart — в multer)
 app.use((req, res, next) => {
   if (req.is && req.is('application/json')) {
     express.json({ limit: '1mb' })(req, res, next);
@@ -128,8 +108,8 @@ app.use((req, res, next) => {
 const swaggerDocument = JSON.parse(fs.readFileSync('./swagger.json', 'utf8'));
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-// Root: короткая справка и ссылки
-app.get('/', (req, res) => {
+// Root: короткая справка
+app.get('/', (_req, res) => {
   res.status(200).json({
     status: 'ok',
     name: 'Feedbacker API',
@@ -139,7 +119,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// API
+// --- РОУТЫ ---
+app.use('/admin', adminRoutes);     // админка (статика + API)
 app.use('/feedback', feedbackRoutes);
 
 // Запуск
