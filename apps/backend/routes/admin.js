@@ -6,16 +6,23 @@ import { getSetting, setSetting } from '../lib/settings.js';
 
 const router = express.Router();
 
-// Абсолютный путь к папке админки (процесс стартует из apps/backend)
+/**
+ * Абсолютный путь к папке админки.
+ * Процесс запускается из apps/backend, поэтому public лежит рядом.
+ */
 const ADMIN_DIR = path.join(process.cwd(), 'public', 'admin');
 
-// Отдаём статику (admin.js, css, картинки) по /admin/*
+/** -------------------- Статика и индекс -------------------- */
+
+// Отдаём статику (admin.js, admin.css, картинки) по /admin/*
 router.use(express.static(ADMIN_DIR));
 
-// Главная страница админки
+// Главная страница админки (SPA на чистом HTML/JS)
 router.get('/', (_req, res) => {
   res.sendFile(path.join(ADMIN_DIR, 'index.html'));
 });
+
+/** -------------------- Auth для API -------------------- */
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'ADMIN_TOKEN';
 
@@ -25,15 +32,28 @@ function adminAuth(req, res, next) {
   return res.status(401).json({ error: 'unauthorized' });
 }
 
-/* ================= SETTINGS ================= */
+/** ============================================================
+ *                      API (префикс /api)
+ *  Все ниже лежащие маршруты соответствуют вызовам фронта:
+ *  - GET    /admin/api/settings
+ *  - PUT    /admin/api/settings
+ *  - GET    /admin/api/feedbacks
+ *  - GET    /admin/api/feedback/:id
+ *  - POST   /admin/api/annotate
+ *  - GET    /admin/api/export
+ * ============================================================ */
 
-router.get('/settings', adminAuth, async (_req, res) => {
+/* -------------------- SETTINGS -------------------- */
+
+// Читать настройки
+router.get('/api/settings', adminAuth, async (_req, res) => {
   const fallback = String(Number.parseFloat(process.env.TELEGRAM_ALERT_THRESHOLD || '0.4'));
   const val = await getSetting('TELEGRAM_ALERT_THRESHOLD', fallback);
   res.json({ TELEGRAM_ALERT_THRESHOLD: val });
 });
 
-router.post('/settings', adminAuth, express.json(), async (req, res) => {
+// Сохранить настройки (PUT, как в логах браузера)
+router.put('/api/settings', adminAuth, express.json(), async (req, res) => {
   try {
     const { TELEGRAM_ALERT_THRESHOLD } = req.body || {};
     if (TELEGRAM_ALERT_THRESHOLD == null) {
@@ -46,9 +66,10 @@ router.post('/settings', adminAuth, express.json(), async (req, res) => {
   }
 });
 
-/* ================= LIST / CARD ================= */
+/* -------------------- LIST / CARD -------------------- */
 
-router.get('/list', adminAuth, async (req, res) => {
+// Лента отзывов (для таблицы): GET /admin/api/feedbacks
+router.get('/api/feedbacks', adminAuth, async (req, res) => {
   const {
     shop_id = '',
     sentiment = '',
@@ -74,7 +95,8 @@ router.get('/list', adminAuth, async (req, res) => {
   res.json({ items: data || [], nextOffset: (data?.length || 0) === lim ? off + lim : null });
 });
 
-router.get('/feedback/:id', adminAuth, async (req, res) => {
+// Карточка отзыва (для модалки): GET /admin/api/feedback/:id
+router.get('/api/feedback/:id', adminAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('feedbacks')
     .select('*')
@@ -93,9 +115,10 @@ router.get('/feedback/:id', adminAuth, async (req, res) => {
   res.json({ item: data, annotation });
 });
 
-/* ================= ANNOTATE (теги/заметка) ================= */
+/* -------------------- ANNOTATE (теги/заметка) -------------------- */
 
-router.post('/annotate', adminAuth, express.json(), async (req, res) => {
+// POST /admin/api/annotate  { feedback_id, tags?, note? }
+router.post('/api/annotate', adminAuth, express.json(), async (req, res) => {
   const { feedback_id, tags, note } = req.body || {};
   if (!feedback_id) return res.status(400).json({ error: 'feedback_id required' });
 
@@ -115,7 +138,7 @@ router.post('/annotate', adminAuth, express.json(), async (req, res) => {
   res.json({ status: 'ok' });
 });
 
-/* ================= EXPORT CSV ================= */
+/* -------------------- EXPORT CSV -------------------- */
 
 function csvEscape(v) {
   const s = v == null ? '' : String(v);
@@ -132,7 +155,8 @@ function toCsv(rows) {
   return lines.join('\n');
 }
 
-router.get('/export', adminAuth, async (req, res) => {
+// GET /admin/api/export?shop_id=&sentiment=&limit=&offset=
+router.get('/api/export', adminAuth, async (req, res) => {
   const {
     shop_id = '',
     sentiment = '',
