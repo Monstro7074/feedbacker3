@@ -1,10 +1,25 @@
 // apps/backend/routes/admin.js
 import express from 'express';
+import path from 'path';
 import { supabase } from '../lib/supabase.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getSetting, setSetting, getSettingNumber } from '../lib/settings.js';
 
 const router = express.Router();
+
+// Абсолютный путь к папке админки
+const ADMIN_DIR = path.join(process.cwd(), 'public', 'admin');
+
+// Отдаём статику (admin.js, css, картинки) по /admin/*
+router.use(express.static(ADMIN_DIR));
+
+// Главная страница админки
+router.get('/', (_req, res) => {
+  res.sendFile(path.join(ADMIN_DIR, 'index.html'));
+});
+
+export default router;
+
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'ADMIN_TOKEN';
 
 function adminAuth(req, res, next) {
