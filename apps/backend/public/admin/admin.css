@@ -1,0 +1,22 @@
+.modal.hidden { display: none; }
+.modal {
+  position: fixed; inset:0; background: rgba(0,0,0,.4);
+  display:flex; align-items:center; justify-content:center; z-index: 9999;
+}
+.modal__dialog {
+  position: relative;
+  background:#12161c; color:#e6edf3; width: min(900px, 95vw);
+  border-radius:12px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+}
+.modal__close {
+  position:absolute; right:18px; top:10px; font-size:20px;
+  background:transparent; border:0; color:#9fb3c8; cursor:pointer;
+}
+.grid { display:grid; grid-template-columns: 1fr 1fr; gap:6px 16px; }
+.box { background:#0b0f14; border:1px solid #1e2833; border-radius:8px; padding:8px; }
+.transcript { max-height: 200px; overflow:auto; white-space: pre-wrap; }
+.qtags { display:flex; flex-wrap: wrap; gap:6px; margin-top:6px; }
+.qt { padding:4px 8px; border-radius:999px; border:1px solid #2a3a4b; background:#0b0f14; color:#cdd7e1; cursor:pointer; }
+.qt.active { background:#2a8; color:#061014; border-color:#2a8; }
+.toast { position:fixed; bottom:16px; right:16px; background:#2a8; color:#041; padding:8px 12px; border-radius:8px; opacity:0; transform:translateY(8px); transition:.2s; }
+.toast.show { opacity:1; transform:none; }
