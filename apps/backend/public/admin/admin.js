@@ -1,245 +1,275 @@
-// apps/backend/public/admin.js
-// ✅ БЕЗ /api — правильная база
-const API_BASE = '/admin';
-const tokenKey = 'ADMIN_TOKEN';
+// apps/backend/public/admin/admin.js
+(() => {
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-function adminToken() { return localStorage.getItem(tokenKey) || ''; }
-function setAdminToken(t) { localStorage.setItem(tokenKey, t || ''); }
+  const state = {
+    token: localStorage.getItem('admin_token') || '',
+    nextSince: null,     // для пагинации (ISO)
+    lastFilters: null,   // запомним последние фильтры
+  };
 
-async function apiGet(path, params = {}) {
-  const url = new URL(API_BASE + path, window.location.origin);
-  Object.entries(params).forEach(([k,v]) => (v!=null && v!=='') && url.searchParams.set(k, v));
-  const r = await fetch(url, { headers: { 'X-Admin-Token': adminToken() } });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-async function apiPost(path, body) {
-  const r = await fetch(API_BASE + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken() },
-    body: JSON.stringify(body || {})
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-/* ---------- toasts ---------- */
-function toast(msg) {
-  const el = document.querySelector('#toast');
-  if (!el) return alert(msg);
-  el.textContent = msg;
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 1600);
-}
-
-/* ---------- settings ---------- */
-async function loadSettings() {
-  try {
-    const s = await apiGet('/settings');
-    const v = s.TELEGRAM_ALERT_THRESHOLD ?? '0.4';
-    const el = document.querySelector('#threshold');
-    if (el) el.value = v;
-  } catch (e) {
-    // мягко подсказали про токен
-    console.warn('settings load error:', e);
-    toast('Введите ADMIN_TOKEN и нажмите «Сохранить»');
+  // --- UI helpers ---
+  function toast(msg, type = 'info') {
+    console.log(`[${type}]`, msg);
+    // простая реализация: alert-на-время без блокировки потока
+    const el = document.createElement('div');
+    el.textContent = msg;
+    el.style.cssText =
+      'position:fixed;right:16px;top:16px;background:#222;color:#fff;padding:10px 14px;border-radius:8px;z-index:9999;opacity:0.95';
+    if (type === 'error') el.style.background = '#b00020';
+    if (type === 'success') el.style.background = '#2e7d32';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2200);
   }
-}
-async function saveSettings() {
-  const el = document.querySelector('#threshold');
-  const v = (el?.value || '').trim();
-  await apiPost('/settings', { TELEGRAM_ALERT_THRESHOLD: v });
-  toast('Сохранено');
-}
 
-/* ---------- list + pagination ---------- */
-let currentOffset = 0;
+  function setTokenToUi(token) {
+    $('#token').value = token || '';
+  }
 
-async function loadList({ reset = false } = {}) {
-  const shop = document.querySelector('#f-shop')?.value.trim() || '';
-  const sentiment = document.querySelector('#f-sentiment')?.value.trim() || '';
-  const limit = parseInt(document.querySelector('#f-limit')?.value || '20', 10);
+  async function safeFetch(url, opts = {}) {
+    const headers = new Headers(opts.headers || {});
+    if (state.token) headers.set('x-admin-token', state.token);
+    headers.set('Accept', 'application/json');
+    return fetch(url, { ...opts, headers });
+  }
 
-  if (reset) currentOffset = 0;
+  // --- SETTINGS ---
+  async function loadSettings() {
+    if (!state.token) {
+      // нет токена — не ломаем страницу, просто просим ввести
+      toast('Введите ADMIN_TOKEN и сохраните', 'info');
+      return;
+    }
+    const r = await safeFetch('/admin/api/settings');
+    if (r.status === 401) { toast('Неверный ADMIN_TOKEN', 'error'); return; }
+    if (!r.ok) { toast('Ошибка загрузки настроек', 'error'); return; }
+    const js = await r.json();
+    const v = Number(js?.TELEGRAM_ALERT_THRESHOLD ?? 0.4);
+    $('#alert-threshold').value = isNaN(v) ? 0.4 : v;
+  }
 
-  const { items, nextOffset } = await apiGet('/list', {
-    shop_id: shop, sentiment, limit, offset: currentOffset
-  });
+  async function saveSettings() {
+    const v = Number($('#alert-threshold').value);
+    const r = await safeFetch('/admin/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ TELEGRAM_ALERT_THRESHOLD: v })
+    });
+    if (r.status === 401) { toast('Неверный ADMIN_TOKEN', 'error'); return; }
+    if (!r.ok) { toast('Не удалось сохранить', 'error'); return; }
+    toast('Сохранено', 'success');
+  }
 
-  const tbody = document.querySelector('#rows');
-  if (!tbody) return;
-  if (reset) tbody.innerHTML = '';
+  // --- LIST + PAGINATION ---
+  function readFilters() {
+    const shop = ($('#shop').value || '').trim();
+    const sentiment = $('#sentiment').value; // '', 'positive', 'neutral', 'negative'
+    const limit = Math.max(1, Math.min(100, Number($('#limit').value || 20)));
+    return { shop, sentiment, limit };
+  }
 
-  for (const it of items) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${new Date(it.timestamp).toLocaleString()}</td>
-      <td>${it.shop_id || ''}</td>
-      <td>${it.device_id || ''}</td>
-      <td>${it.sentiment || ''}</td>
-      <td>${it.emotion_score ?? ''}</td>
-      <td>${(it.tags || []).join(', ')}</td>
-      <td>
-        <button class="btn-play" data-id="${it.id}">Прослушать</button>
-        <button class="btn-card" data-id="${it.id}">Карточка</button>
-      </td>
+  function rowHtml(item) {
+    const dt = new Date(item.timestamp);
+    const when = dt.toLocaleString();
+    const emo = (item.emotion_score ?? '').toString();
+    const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+    const s = item.sentiment;
+    return `
+      <tr data-id="${item.id}">
+        <td>${when}</td>
+        <td>${item.shop_id || ''}</td>
+        <td>${item.device_id || ''}</td>
+        <td>${s || ''}</td>
+        <td>${emo}</td>
+        <td>${tags}</td>
+        <td>
+          <button class="btn btn-sm play" data-id="${item.id}">Прослушать</button>
+          <button class="btn btn-sm card" data-id="${item.id}">Карточка</button>
+        </td>
+      </tr>
     `;
-    tbody.appendChild(tr);
   }
 
-  const moreBtn = document.querySelector('#btn-more');
-  if (moreBtn) {
-    if (nextOffset != null) { currentOffset = nextOffset; moreBtn.disabled = false; }
-    else { moreBtn.disabled = true; }
+  function clearTable() { $('#tbody').innerHTML = ''; }
+
+  function appendRows(items) {
+    const html = items.map(rowHtml).join('');
+    $('#tbody').insertAdjacentHTML('beforeend', html);
   }
-}
 
-/* ---------- card modal ---------- */
-let currentCardId = null;
+  async function fetchList({ shop, sentiment, limit, since }) {
+    // наш публичный роут, токен не нужен
+    const params = new URLSearchParams();
+    params.set('since', since || '1970-01-01T00:00:00Z');
+    params.set('limit', String(limit));
+    const r = await fetch(`/feedback/${encodeURIComponent(shop || 'shop_001')}?${params}`);
+    if (!r.ok) throw new Error('fetch list failed');
+    const arr = await r.json();
+    // локальная фильтрация по sentiment (если выбрано в UI)
+    const filtered = sentiment ? arr.filter(x => x.sentiment === sentiment) : arr;
+    return filtered;
+  }
 
-async function openCard(id) {
-  currentCardId = id;
-  const { item, annotation } = await apiGet(`/feedback/${id}`);
+  async function loadFirstPage() {
+    const f = readFilters();
+    state.lastFilters = f;
+    state.nextSince = null;
+    clearTable();
 
-  // fill fields
-  document.querySelector('#c-time').textContent = new Date(item.timestamp).toLocaleString();
-  document.querySelector('#c-shop').textContent = item.shop_id || '';
-  document.querySelector('#c-device').textContent = item.device_id || '';
-  document.querySelector('#c-sentiment').textContent = item.sentiment || '';
-  document.querySelector('#c-score').textContent = item.emotion_score ?? '';
-  document.querySelector('#c-tags').textContent = (item.tags || []).join(', ');
-  document.querySelector('#c-summary').textContent = item.summary || '';
-  document.querySelector('#c-transcript').textContent = item.transcript || '';
+    const items = await fetchList({ ...f, since: f.since || '1970-01-01T00:00:00Z' });
+    appendRows(items);
 
-  // audio via redirect (без токена в JS)
-  const p = document.querySelector('#c-audio');
-  if (p) p.src = `/feedback/redirect-audio/${item.id}`;
-
-  // details link
-  const link = document.querySelector('#c-details-link');
-  if (link) link.href = `/feedback/full/${item.id}`;
-
-  // quick tags
-  const managerTags = new Set((annotation?.tags) || []);
-  document.querySelectorAll('#qtags .qt').forEach(btn => {
-    const tag = btn.dataset.tag;
-    if (managerTags.has(tag)) btn.classList.add('active'); else btn.classList.remove('active');
-  });
-  const note = document.querySelector('#c-note');
-  if (note) note.value = annotation?.note || '';
-
-  showModal(true);
-}
-
-function collectQuickTags() {
-  const tags = [];
-  document.querySelectorAll('#qtags .qt.active').forEach(b => tags.push(b.dataset.tag));
-  return tags;
-}
-
-async function saveAnnotation() {
-  if (!currentCardId) return;
-  const tags = collectQuickTags();
-  const note = document.querySelector('#c-note')?.value || '';
-  await apiPost('/annotate', { feedback_id: currentCardId, tags, note });
-  toast('Аннотация сохранена');
-}
-
-function showModal(v) {
-  const m = document.querySelector('#modal');
-  if (m) m.classList.toggle('hidden', !v);
-}
-
-/* ---------- export CSV ---------- */
-async function exportCsv() {
-  const shop = document.querySelector('#f-shop')?.value.trim() || '';
-  const sentiment = document.querySelector('#f-sentiment')?.value.trim() || '';
-  const limit = parseInt(document.querySelector('#f-limit')?.value || '1000', 10);
-
-  const url = new URL(API_BASE + '/export', window.location.origin);
-  if (shop) url.searchParams.set('shop_id', shop);
-  if (sentiment) url.searchParams.set('sentiment', sentiment);
-  url.searchParams.set('limit', String(limit));
-
-  const r = await fetch(url, { headers: { 'X-Admin-Token': adminToken() } });
-  if (!r.ok) { toast('Ошибка экспорта'); return; }
-  const blob = await r.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `feedback_export_${Date.now()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-/* ---------- event wiring ---------- */
-document.addEventListener('DOMContentLoaded', () => {
-  // подставим сохранённый токен в инпут, если он есть
-  const tokenInput = document.querySelector('#token');
-  if (tokenInput) tokenInput.value = adminToken();
-
-  // токен
-  document.querySelector('#btn-save-token')?.addEventListener('click', () => {
-    setAdminToken(document.querySelector('#token').value.trim());
-    toast('Токен сохранён');
-    // после сохранения сразу пробуем подгрузить настройки и список
-    loadSettings().then(() => loadList({ reset: true })).catch(()=>{});
-  });
-  document.querySelector('#btn-logout')?.addEventListener('click', () => {
-    setAdminToken('');
-    toast('Вышли');
-  });
-
-  // настройки
-  document.querySelector('#btn-save-settings')?.addEventListener('click', () => {
-    saveSettings().catch(e => toast('Ошибка: ' + e.message));
-  });
-
-  // список
-  document.querySelector('#btn-load')?.addEventListener('click', () => {
-    loadList({ reset: true }).catch(e => toast('Ошибка: ' + e.message));
-  });
-  document.querySelector('#btn-more')?.addEventListener('click', () => {
-    loadList({ reset: false }).catch(e => toast('Ошибка: ' + e.message));
-  });
-
-  // экспорт
-  document.querySelector('#btn-export')?.addEventListener('click', () => {
-    exportCsv().catch(e => toast('Ошибка: ' + e.message));
-  });
-
-  // делегируем действия в таблице
-  document.addEventListener('click', (e) => {
-    const play = e.target.closest('.btn-play');
-    if (play) {
-      const id = play.dataset.id;
-      // отдельный общий плеер на странице
-      const player = document.querySelector('#player') || document.querySelector('#c-audio');
-      if (player) {
-        player.src = `/feedback/redirect-audio/${id}`;
-        player.play?.().catch(()=>{});
-      }
-      return;
+    // запомним метку для следующей страницы (берём последний timestamp)
+    if (items.length) {
+      const lastTs = items[items.length - 1].timestamp;
+      // сдвигаемся на 1 мс назад, чтобы не дублировать пограничный
+      const prev = new Date(lastTs).getTime() - 1;
+      state.nextSince = new Date(prev).toISOString();
     }
-    const card = e.target.closest('.btn-card');
-    if (card) {
-      openCard(card.dataset.id).catch(err => toast('Ошибка карточки: ' + err.message));
-      return;
+  }
+
+  async function loadMore() {
+    if (!state.lastFilters) return;
+    const f = state.lastFilters;
+    const since = state.nextSince || '1970-01-01T00:00:00Z';
+    const items = await fetchList({ ...f, since });
+    appendRows(items);
+    if (items.length) {
+      const lastTs = items[items.length - 1].timestamp;
+      const prev = new Date(lastTs).getTime() - 1;
+      state.nextSince = new Date(prev).toISOString();
     }
-    const qt = e.target.closest('#qtags .qt');
-    if (qt) {
-      qt.classList.toggle('active');
-      return;
-    }
+  }
+
+  // --- AUDIO ---
+  function playById(id) {
+    const audio = $('#player');
+    audio.src = `/feedback/redirect-audio/${encodeURIComponent(id)}`;
+    audio.play().catch(() => {/* автоплей может быть заблокирован браузером */});
+  }
+
+  // --- CARD MODAL (минимум, без внешних зависимостей) ---
+  async function openCard(id) {
+    const r = await fetch(`/feedback/full/${encodeURIComponent(id)}`);
+    if (!r.ok) { toast('Не удалось загрузить карточку', 'error'); return; }
+    const js = await r.json();
+    const d = js.feedback || {};
+    const tags = Array.isArray(d.tags) ? d.tags.join(', ') : '';
+
+    const html = `
+      <div class="modal-backdrop"></div>
+      <div class="modal">
+        <div class="modal-hd">
+          <strong>Карточка отзыва</strong>
+          <button class="modal-close">×</button>
+        </div>
+        <div class="modal-bd">
+          <p><b>ID:</b> ${d.id}</p>
+          <p><b>Магазин:</b> ${d.shop_id}</p>
+          <p><b>Устройство:</b> ${d.device_id ?? ''}</p>
+          <p><b>Время:</b> ${new Date(d.timestamp).toLocaleString()}</p>
+          <p><b>Сентимент:</b> ${d.sentiment} (${d.emotion_score})</p>
+          <p><b>Теги:</b> ${tags}</p>
+          <p><b>Резюме:</b> ${d.summary ?? ''}</p>
+          <details><summary>Транскрипт</summary><pre style="white-space:pre-wrap">${d.transcript ?? ''}</pre></details>
+        </div>
+        <div class="modal-ft">
+          <button class="btn play-modal" data-id="${d.id}">▶ Прослушать</button>
+          <button class="btn modal-close">Закрыть</button>
+        </div>
+      </div>
+    `;
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-wrap';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+
+    wrap.addEventListener('click', (e) => {
+      if (e.target.classList.contains('modal-close') || e.target === wrap) wrap.remove();
+      if (e.target.classList.contains('play-modal')) playById(e.target.dataset.id);
+    });
+  }
+
+  // --- CSV ---
+  async function exportCsv() {
+    const f = readFilters();
+    // CSV отдаёт защищённый /admin/api/export => нужен токен в заголовке
+    const params = new URLSearchParams();
+    if (f.shop) params.set('shop_id', f.shop);
+    if (f.limit) params.set('limit', String(f.limit));
+    const r = await safeFetch(`/admin/api/export?${params.toString()}`);
+    if (r.status === 401) { toast('Неверный ADMIN_TOKEN', 'error'); return; }
+    if (!r.ok) { toast('Экспорт не удался', 'error'); return; }
+
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    a.download = `feedback_${f.shop || 'all'}_${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // --- EVENTS ---
+  function bindEvents() {
+    // токен: загрузить/сохранить/выйти
+    setTokenToUi(state.token);
+
+    $('#saveToken').addEventListener('click', () => {
+      const t = $('#token').value.trim();
+      if (!t) { toast('Токен пустой', 'error'); return; }
+      state.token = t;
+      localStorage.setItem('admin_token', t);
+      toast('Токен сохранён', 'success');
+      loadSettings().catch(() => {});
+    });
+
+    $('#logout').addEventListener('click', () => {
+      localStorage.removeItem('admin_token');
+      state.token = '';
+      setTokenToUi('');
+      toast('Токен удалён', 'success');
+    });
+
+    // настройки
+    $('#saveSettings').addEventListener('click', () => {
+      saveSettings().catch(err => { console.error(err); toast('Ошибка сохранения', 'error'); });
+    });
+
+    // лента
+    $('#load').addEventListener('click', () => {
+      loadFirstPage().catch(err => { console.error(err); toast('Ошибка загрузки ленты', 'error'); });
+    });
+
+    $('#more').addEventListener('click', () => {
+      loadMore().catch(err => { console.error(err); toast('Не удалось подгрузить ещё', 'error'); });
+    });
+
+    // действия в таблице (делегирование)
+    $('#tbody').addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.classList.contains('play')) return playById(id);
+      if (btn.classList.contains('card')) return openCard(id);
+    });
+
+    // CSV
+    $('#exportCsv').addEventListener('click', () => {
+      exportCsv().catch(err => { console.error(err); toast('Ошибка экспорта', 'error'); });
+    });
+  }
+
+  // --- START ---
+  document.addEventListener('DOMContentLoaded', () => {
+    bindEvents();
+    // если токен уже сохранён — тихо подтянем настройки
+    if (state.token) loadSettings().catch(() => {});
+    // а ленту можно грузить сразу (она публичная)
+    loadFirstPage().catch(() => {});
   });
-
-  document.querySelector('#btn-save-anno')?.addEventListener('click', () => {
-    saveAnnotation().catch(e => toast('Ошибка сохранения: ' + e.message));
-  });
-
-  document.querySelector('#modal-close')?.addEventListener('click', () => showModal(false));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') showModal(false); });
-
-  // автоинициализация (попробуем — если нет токена, просто покажем тост)
-  loadSettings().then(() => loadList({ reset: true })).catch(()=>{});
-});
+})();
