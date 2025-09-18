@@ -155,60 +155,57 @@ function toCsv(rows) {
   return lines.join('\n');
 }
 
-// GET /admin/api/export?shop_id=&sentiment=&limit=&offset=
-router.get('/api/export', adminAuth, async (req, res) => {
-  const {
-    shop_id = '',
-    sentiment = '',
-    limit = '1000',
-    offset = '0',
-  } = req.query;
+// GET /admin/api/export?shop_id=&limit=
+router.get('/api/export', requireAdmin, async (req, res) => {
+  try {
+    const shopId = (req.query.shop_id || '').trim();
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit || '200', 10)));
 
-  const lim = Math.min(Math.max(parseInt(limit, 10) || 1000, 1), 5000);
-  const off = Math.max(parseInt(offset, 10) || 0, 0);
+    let q = supabase
+      .from('feedbacks')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
 
-  let q = supabase
-    .from('feedbacks')
-    .select('id,timestamp,shop_id,device_id,sentiment,emotion_score,tags,summary')
-    .order('timestamp', { ascending: false })
-    .range(off, off + lim - 1);
+    if (shopId) q = q.eq('shop_id', shopId);
 
-  if (shop_id) q = q.eq('shop_id', shop_id);
-  if (sentiment) q = q.eq('sentiment', sentiment);
+    const { data, error } = await q;
+    if (error) return res.status(500).send('db error');
 
-  const { data, error } = await q;
-  if (error) return res.status(500).json({ error: error.message });
+    const rows = data || [];
+    // CSV: заголовок
+    const head = [
+      'id','timestamp','shop_id','device_id','sentiment','emotion_score',
+      'tags','summary','audio_path'
+    ].join(',');
 
-  const ids = (data || []).map(x => x.id);
-  let annMap = new Map();
-  if (ids.length) {
-    const { data: anns } = await supabase
-      .from('feedback_annotations')
-      .select('feedback_id,tags,note')
-      .in('feedback_id', ids);
-    (anns || []).forEach(a => annMap.set(a.feedback_id, a));
-  }
-
-  const rows = (data || []).map(d => {
-    const a = annMap.get(d.id);
-    return {
-      id: d.id,
-      timestamp: d.timestamp,
-      shop_id: d.shop_id,
-      device_id: d.device_id,
-      sentiment: d.sentiment,
-      emotion_score: d.emotion_score,
-      tags: (d.tags || []).join('|'),
-      summary: d.summary || '',
-      manager_tags: (a?.tags || []).join('|'),
-      manager_note: a?.note || '',
+    const escape = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      if (/[,"\n]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
+      return s;
     };
-  });
 
-  const csv = toCsv(rows);
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="feedback_export_${Date.now()}.csv"`);
-  res.send(csv);
+    const body = rows.map(r => [
+      r.id,
+      r.timestamp,
+      r.shop_id,
+      r.device_id ?? '',
+      r.sentiment ?? '',
+      r.emotion_score ?? '',
+      Array.isArray(r.tags) ? r.tags.join('|') : '',
+      r.summary ?? '',
+      r.audio_path ?? ''
+    ].map(escape).join(','));
+
+    const csv = [head, ...body].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    res.setHeader('Content-Disposition', `attachment; filename="feedback_${shopId || 'all'}_${ts}.csv"`);
+    return res.status(200).send(csv);
+  } catch (e) {
+    console.error('export error', e);
+    return res.status(500).send('internal error');
+  }
 });
-
-export default router;
