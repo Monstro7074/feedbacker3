@@ -20,11 +20,26 @@
     .muted{color:#6b7280}
     audio{width:100%;margin-top:10px}
   /* мягкая подсветка по статусам */
-  tr.row-status-new { background: rgba(59,130,246,0.06); }         /* синий намёк */
-  tr.row-status-in_progress { background: rgba(234,179,8,0.10); }  /* жёлтый намёк */
-  tr.row-status-resolved { background: rgba(16,185,129,0.10); }    /* зелёный намёк */
-  /* чуть-чуть отделим строку при ховере */
-  #feedback-table tbody tr:hover { filter: saturate(1.05); }
+  /* принудительно задаём фон, чтобы таблица/библиотека не перебивала */
+  #feedback-table tbody tr.row-status-new td {
+    background: rgba(59,130,246,0.06) !important;
+  }
+  #feedback-table tbody tr.row-status-in_progress td {
+    background: rgba(234,179,8,0.10) !important;
+  }
+  #feedback-table tbody tr.row-status-resolved td {
+    background: rgba(16,185,129,0.10) !important;
+  }
+  #feedback-table tbody tr:hover td {
+    filter: saturate(1.05);
+  }
+  .btn-link {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: #2563eb;
+  }
   </style>
 </head>
 <body>
