@@ -81,6 +81,14 @@
     `;
   }
 
+  // NEW: класс строки по статусу (для подсветки)
+  function rowClassFor(status) {
+    if (status === 'resolved') return 'row-status-resolved';
+    if (status === 'in_progress') return 'row-status-in_progress';
+    return 'row-status-new';
+  }
+
+  // >>>>> ИЗМЕНЁННАЯ ЧАСТЬ: рендер строки с классом по статусу
   function rowHtml(item) {
     const dt = new Date(item.timestamp);
     const when = dt.toLocaleString();
@@ -88,11 +96,13 @@
     const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
     const s = item.sentiment;
 
-    // NEW: колонка статуса — берём с бэка, если пришёл; иначе показываем 'new'
-    const statusCell = statusSelectHtml(item.id, item.manager_status);
+    // колонка статуса — берём с бэка, если пришёл; иначе 'new'
+    const currentStatus = item.manager_status || 'new';
+    const statusCell = statusSelectHtml(item.id, currentStatus);
+    const rowClass = rowClassFor(currentStatus);
 
     return `
-      <tr data-id="${item.id}">
+      <tr data-id="${item.id}" class="${rowClass}">
         <td>${when}</td>
         <td>${item.shop_id || ''}</td>
         <td>${item.device_id || ''}</td>
@@ -107,6 +117,7 @@
       </tr>
     `;
   }
+  // <<<<< КОНЕЦ ИЗМЕНЁННОЙ ЧАСТИ
 
   function clearTable() { $('#tbody').innerHTML = ''; }
 
@@ -275,7 +286,7 @@
       if (btn.classList.contains('card')) return openCard(id);
     });
 
-    // NEW: делегирование изменения статуса и запоминание предыдущего значения
+    // делегирование изменения статуса и запоминание предыдущего значения
     $('#tbody').addEventListener('focusin', (e) => {
       const sel = e.target.closest('.status-select');
       if (sel) sel.setAttribute('data-prev', sel.value);
@@ -298,8 +309,13 @@
           throw new Error(json.error || `HTTP_${res.status}`);
         }
         toast('Статус обновлён', 'success');
-        // опционально можно подсветить строку
-        // e.target.closest('tr').dataset.status = status;
+
+        // NEW: сразу обновим подсветку строки
+        const tr = sel.closest('tr');
+        if (tr) {
+          tr.classList.remove('row-status-new','row-status-in_progress','row-status-resolved');
+          tr.classList.add(rowClassFor(status));
+        }
       } catch (err) {
         console.error(err);
         toast('Ошибка обновления статуса', 'error');
