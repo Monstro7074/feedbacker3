@@ -63,10 +63,13 @@
 
   // --- LIST + PAGINATION ---
   function readFilters() {
-    const shop = ($('#shop').value || '').trim();
-    const sentiment = $('#sentiment').value; // '', 'positive', 'neutral', 'negative'
-    const limit = Math.max(1, Math.min(100, Number($('#limit').value || 20)));
-    return { shop, sentiment, limit };
+    const shop = ($('#shop')?.value || '').trim();
+    const sentiment = $('#sentiment')?.value || ''; // '', 'positive', 'neutral', 'negative'
+    const limit = Math.max(1, Math.min(100, Number($('#limit')?.value || 20)));
+    // безопасно читаем будущий селект статуса, если он появится в index.html
+    const statusEl = $('#filter-status');
+    const manager_status = statusEl ? (statusEl.value || '') : '';
+    return { shop, sentiment, limit, manager_status };
   }
 
   // NEW: генерация HTML для селекта статуса
@@ -226,6 +229,9 @@
     const params = new URLSearchParams();
     if (f.shop) params.set('shop_id', f.shop);
     if (f.limit) params.set('limit', String(f.limit));
+    // если в UI появится селект статуса — прокинем его без лишних правок
+    if (f.manager_status) params.set('manager_status', f.manager_status);
+
     const r = await safeFetch(`/admin/api/export?${params.toString()}`);
     if (r.status === 401) { toast('Неверный ADMIN_TOKEN', 'error'); return; }
     if (!r.ok) { toast('Экспорт не удался', 'error'); return; }
