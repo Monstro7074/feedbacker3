@@ -156,7 +156,7 @@ function toCsv(rows) {
 }
 
 // GET /admin/api/export?shop_id=&limit=
-router.get('/api/export', requireAdmin, async (req, res) => {
+router.get('/api/export', adminAuth, async (req, res) => {
   try {
     const shopId = (req.query.shop_id || '').trim();
     const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit || '200', 10)));
@@ -209,3 +209,4 @@ router.get('/api/export', requireAdmin, async (req, res) => {
     return res.status(500).send('internal error');
   }
 });
+export default router;
