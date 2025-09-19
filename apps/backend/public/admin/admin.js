@@ -69,12 +69,28 @@
     return { shop, sentiment, limit };
   }
 
+  // NEW: генерация HTML для селекта статуса
+  function statusSelectHtml(id, value) {
+    const v = value || 'new';
+    return `
+      <select class="status-select" data-id="${id}">
+        <option value="new" ${v === 'new' ? 'selected' : ''}>new</option>
+        <option value="in_progress" ${v === 'in_progress' ? 'selected' : ''}>in_progress</option>
+        <option value="resolved" ${v === 'resolved' ? 'selected' : ''}>resolved</option>
+      </select>
+    `;
+  }
+
   function rowHtml(item) {
     const dt = new Date(item.timestamp);
     const when = dt.toLocaleString();
     const emo = (item.emotion_score ?? '').toString();
     const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
     const s = item.sentiment;
+
+    // NEW: колонка статуса — берём с бэка, если пришёл; иначе показываем 'new'
+    const statusCell = statusSelectHtml(item.id, item.manager_status);
+
     return `
       <tr data-id="${item.id}">
         <td>${when}</td>
@@ -83,6 +99,7 @@
         <td>${s || ''}</td>
         <td>${emo}</td>
         <td>${tags}</td>
+        <td>${statusCell}</td>          <!-- NEW: Статус -->
         <td>
           <button class="btn btn-sm play" data-id="${item.id}">Прослушать</button>
           <button class="btn btn-sm card" data-id="${item.id}">Карточка</button>
@@ -256,6 +273,40 @@
       const id = btn.dataset.id;
       if (btn.classList.contains('play')) return playById(id);
       if (btn.classList.contains('card')) return openCard(id);
+    });
+
+    // NEW: делегирование изменения статуса и запоминание предыдущего значения
+    $('#tbody').addEventListener('focusin', (e) => {
+      const sel = e.target.closest('.status-select');
+      if (sel) sel.setAttribute('data-prev', sel.value);
+    });
+
+    $('#tbody').addEventListener('change', async (e) => {
+      const sel = e.target.closest('.status-select');
+      if (!sel) return;
+      const id = sel.getAttribute('data-id');
+      const status = sel.value;
+
+      try {
+        const res = await safeFetch(`/admin/api/feedbacks/${encodeURIComponent(id)}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.ok) {
+          throw new Error(json.error || `HTTP_${res.status}`);
+        }
+        toast('Статус обновлён', 'success');
+        // опционально можно подсветить строку
+        // e.target.closest('tr').dataset.status = status;
+      } catch (err) {
+        console.error(err);
+        toast('Ошибка обновления статуса', 'error');
+        // откат значения
+        const prev = sel.getAttribute('data-prev') || 'new';
+        sel.value = prev;
+      }
     });
 
     // CSV
