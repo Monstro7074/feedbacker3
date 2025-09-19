@@ -75,6 +75,7 @@ router.get('/api/feedbacks', adminAuth, async (req, res) => {
     sentiment = '',
     limit = '20',
     offset = '0',
+    manager_status = '', // NEW: фильтр по статусу менеджера
   } = req.query;
 
   const lim = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -82,12 +83,19 @@ router.get('/api/feedbacks', adminAuth, async (req, res) => {
 
   let q = supabase
     .from('feedbacks')
-    .select('id,timestamp,shop_id,device_id,sentiment,emotion_score,tags,summary')
+    // NEW: добавили manager_status в select
+    .select('id,timestamp,shop_id,device_id,sentiment,emotion_score,tags,summary,manager_status')
     .order('timestamp', { ascending: false })
     .range(off, off + lim - 1);
 
   if (shop_id) q = q.eq('shop_id', shop_id);
   if (sentiment) q = q.eq('sentiment', sentiment);
+
+  // NEW: применяем фильтр по статусу, только если значение валидное
+  const allowedStatuses = ['new', 'in_progress', 'resolved'];
+  if (manager_status && allowedStatuses.includes(manager_status)) {
+    q = q.eq('manager_status', manager_status);
+  }
 
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
@@ -160,6 +168,7 @@ router.get('/api/export', adminAuth, async (req, res) => {
   try {
     const shopId = (req.query.shop_id || '').trim();
     const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit || '200', 10)));
+    const managerStatus = (req.query.manager_status || '').trim(); // NEW
 
     let q = supabase
       .from('feedbacks')
@@ -169,14 +178,20 @@ router.get('/api/export', adminAuth, async (req, res) => {
 
     if (shopId) q = q.eq('shop_id', shopId);
 
+    // NEW: фильтр по статусу
+    const allowedStatuses = ['new', 'in_progress', 'resolved'];
+    if (managerStatus && allowedStatuses.includes(managerStatus)) {
+      q = q.eq('manager_status', managerStatus);
+    }
+
     const { data, error } = await q;
     if (error) return res.status(500).send('db error');
 
     const rows = data || [];
-    // CSV: заголовок
+    // CSV: заголовок (NEW: добавили manager_status перед audio_path)
     const head = [
       'id','timestamp','shop_id','device_id','sentiment','emotion_score',
-      'tags','summary','audio_path'
+      'tags','summary','manager_status','audio_path'
     ].join(',');
 
     const escape = (v) => {
@@ -195,6 +210,7 @@ router.get('/api/export', adminAuth, async (req, res) => {
       r.emotion_score ?? '',
       Array.isArray(r.tags) ? r.tags.join('|') : '',
       r.summary ?? '',
+      r.manager_status ?? '',          // NEW
       r.audio_path ?? ''
     ].map(escape).join(','));
 
@@ -209,4 +225,5 @@ router.get('/api/export', adminAuth, async (req, res) => {
     return res.status(500).send('internal error');
   }
 });
+
 export default router;
